@@ -1,0 +1,58 @@
+{
+  "name": "taskctl",
+  "version": "0.1.0",
+  "description": "AI-Powered Task Management CLI using Mastra framework",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "taskctl": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write src/",
+    "format:check": "prettier --check src/",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "test": "vitest",
+    "test:run": "vitest run"
+  },
+  "keywords": [
+    "cli",
+    "ai",
+    "task-management",
+    "git",
+    "worktree",
+    "mastra"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@libsql/client": "^0.15.0",
+    "@mastra/core": "^0.5.0",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "drizzle-orm": "^0.39.1",
+    "inquirer": "^12.3.2",
+    "ora": "^8.1.1",
+    "ulid": "^2.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "drizzle-kit": "^0.30.4",
+    "eslint": "^9.18.0",
+    "prettier": "^3.4.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.21.0",
+    "vitest": "^3.0.4"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
