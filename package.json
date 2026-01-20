@@ -32,6 +32,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.15",
     "@anthropic-ai/sdk": "^0.39.0",
     "@libsql/client": "^0.15.0",
     "@mastra/core": "^0.5.0",

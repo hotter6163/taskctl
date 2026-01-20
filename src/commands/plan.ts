@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import chalk from "chalk";
+import ora from "ora";
 import {
   createPlan,
   getPlanById,
@@ -11,6 +12,7 @@ import { getTasksByPlan, getAllDependenciesForPlan } from "../db/repositories/ta
 import { getCurrentProject } from "./project.js";
 import { getCurrentBranch } from "../integrations/git.js";
 import { shortId } from "../utils/id.js";
+import { generateAndSavePlan } from "../mastra/workflows/planning.js";
 import type { PlanStatus } from "../db/schema.js";
 
 export function registerPlanCommand(program: Command): void {
@@ -63,7 +65,7 @@ export function registerPlanCommand(program: Command): void {
       await removePlan(planId);
     });
 
-  // AI subcommand will be added in Phase 3
+  // AI subcommand
   const aiCmd = planCmd.command("ai").description("AI-powered planning");
 
   aiCmd
@@ -72,24 +74,210 @@ export function registerPlanCommand(program: Command): void {
     .option("-p, --plan-id <id>", "Add to existing plan")
     .option("-b, --branch <branch>", "Source branch")
     .option("-m, --max-lines <lines>", "Max lines per task", parseInt)
-    .action(async (_prompt: string, _options: unknown) => {
-      console.log(chalk.yellow("AI generation will be available in Phase 3"));
-      console.log(chalk.gray("For now, use 'taskctl task add' to manually add tasks"));
-    });
+    .option("-c, --context <files...>", "Additional context files to include")
+    .action(
+      async (
+        prompt: string,
+        options: {
+          planId?: string;
+          branch?: string;
+          maxLines?: number;
+          context?: string[];
+        }
+      ) => {
+        await generateTasksWithAI(prompt, options);
+      }
+    );
 
   aiCmd
     .command("review <plan-id>")
     .description("Review AI-generated tasks")
-    .action(async (_planId: string) => {
-      console.log(chalk.yellow("AI review will be available in Phase 3"));
+    .action(async (planId: string) => {
+      await reviewPlan(planId);
     });
 
   aiCmd
     .command("approve <plan-id>")
     .description("Approve AI-generated tasks")
-    .action(async (_planId: string) => {
-      console.log(chalk.yellow("AI approval will be available in Phase 3"));
+    .action(async (planId: string) => {
+      await approvePlan(planId);
     });
+}
+
+async function generateTasksWithAI(
+  prompt: string,
+  options: {
+    planId?: string;
+    branch?: string;
+    maxLines?: number;
+    context?: string[];
+  }
+): Promise<void> {
+  const project = await getCurrentProject();
+  if (!project) {
+    console.error(chalk.red("No project found in current directory"));
+    console.error(chalk.gray("Run 'taskctl init' to initialize this repository"));
+    process.exit(1);
+  }
+
+  // Check for API key
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.error(chalk.red("Error: ANTHROPIC_API_KEY environment variable not set"));
+    console.error(chalk.gray("Set it with: export ANTHROPIC_API_KEY=your-api-key"));
+    process.exit(1);
+  }
+
+  let plan;
+  if (options.planId) {
+    // Use existing plan
+    plan = await findPlan(options.planId);
+    if (!plan) {
+      console.error(chalk.red(`Plan not found: ${options.planId}`));
+      process.exit(1);
+    }
+  } else {
+    // Create new plan
+    const sourceBranch = options.branch ?? (await getCurrentBranch(project.path));
+    const title = prompt.length > 50 ? prompt.substring(0, 47) + "..." : prompt;
+    plan = await createPlan({
+      projectId: project.id,
+      title,
+      description: prompt,
+      sourceBranch,
+      status: "draft",
+    });
+    console.log(chalk.green(`✓ Created plan: ${plan.title}`));
+  }
+
+  const spinner = ora("Generating tasks with AI...").start();
+
+  try {
+    const result = await generateAndSavePlan({
+      prompt,
+      plan,
+      projectPath: project.path,
+      maxLinesPerTask: options.maxLines ?? 100,
+      contextFiles: options.context,
+    });
+
+    spinner.succeed(`Generated ${result.tasks.length} tasks`);
+
+    console.log("");
+    console.log(chalk.bold("Summary:"));
+    console.log(chalk.gray(`  ${result.summary}`));
+    console.log("");
+    console.log(chalk.bold("Tasks:"));
+
+    // Group by level
+    const byLevel: Record<number, typeof result.tasks> = {};
+    for (const task of result.tasks) {
+      const levelTasks = byLevel[task.level] ?? [];
+      levelTasks.push(task);
+      byLevel[task.level] = levelTasks;
+    }
+
+    const levels = Object.keys(byLevel)
+      .map(Number)
+      .sort((a, b) => a - b);
+
+    for (const level of levels) {
+      const tasks = byLevel[level] ?? [];
+      const isParallel = tasks.length > 1;
+      console.log(
+        chalk.cyan(`  Level ${level}`) + (isParallel ? chalk.gray(" (parallel)") : "") + ":"
+      );
+      for (const task of tasks) {
+        console.log(`    ○ [${shortId(task.id)}] ${task.title} (~${task.estimatedLines} lines)`);
+      }
+    }
+
+    console.log("");
+    console.log(chalk.gray("Next steps:"));
+    console.log(chalk.gray(`  taskctl plan show ${shortId(plan.id)}        # Review the plan`));
+    console.log(chalk.gray(`  taskctl plan graph ${shortId(plan.id)}       # View dependency graph`));
+    console.log(chalk.gray(`  taskctl plan start ${shortId(plan.id)}       # Start the plan`));
+  } catch (error) {
+    spinner.fail("Failed to generate tasks");
+    if (error instanceof Error) {
+      console.error(chalk.red(error.message));
+    }
+    process.exit(1);
+  }
+}
+
+async function reviewPlan(planId: string): Promise<void> {
+  const plan = await findPlan(planId);
+  if (!plan) {
+    console.error(chalk.red(`Plan not found: ${planId}`));
+    process.exit(1);
+  }
+
+  const tasks = await getTasksByPlan(plan.id);
+  const deps = await getAllDependenciesForPlan(plan.id);
+
+  console.log("");
+  console.log(chalk.bold(`Review Plan: ${plan.title}`));
+  console.log(chalk.gray(`Status: ${plan.status}`));
+  console.log("");
+
+  if (tasks.length === 0) {
+    console.log(chalk.yellow("No tasks in this plan"));
+    return;
+  }
+
+  // Group by level
+  const byLevel: Record<number, typeof tasks> = {};
+  for (const task of tasks) {
+    const levelTasks = byLevel[task.level] ?? [];
+    levelTasks.push(task);
+    byLevel[task.level] = levelTasks;
+  }
+
+  const levels = Object.keys(byLevel)
+    .map(Number)
+    .sort((a, b) => a - b);
+
+  for (const level of levels) {
+    const levelTasks = byLevel[level] ?? [];
+    console.log(chalk.cyan(`Level ${level}:`));
+    for (const task of levelTasks) {
+      console.log(`  ${chalk.bold(shortId(task.id))} ${task.title}`);
+      console.log(chalk.gray(`    ${task.description.substring(0, 100)}${task.description.length > 100 ? "..." : ""}`));
+      if (task.estimatedLines) {
+        console.log(chalk.gray(`    Estimated: ~${task.estimatedLines} lines`));
+      }
+      const taskDeps = deps.filter((d) => d.taskId === task.id);
+      if (taskDeps.length > 0) {
+        console.log(chalk.gray(`    Depends on: ${taskDeps.map((d) => shortId(d.dependsOnId)).join(", ")}`));
+      }
+      console.log("");
+    }
+  }
+
+  console.log(chalk.gray("To modify tasks:"));
+  console.log(chalk.gray(`  taskctl task edit <task-id> --title "New title"`));
+  console.log(chalk.gray(`  taskctl task delete <task-id>`));
+  console.log(chalk.gray(`  taskctl task depends <task-id> --on <dep-id>`));
+  console.log("");
+  console.log(chalk.gray("To approve and start:"));
+  console.log(chalk.gray(`  taskctl plan start ${shortId(plan.id)}`));
+}
+
+async function approvePlan(planId: string): Promise<void> {
+  const plan = await findPlan(planId);
+  if (!plan) {
+    console.error(chalk.red(`Plan not found: ${planId}`));
+    process.exit(1);
+  }
+
+  if (plan.status === "in_progress") {
+    console.log(chalk.yellow("Plan is already in progress"));
+    return;
+  }
+
+  await updatePlanStatus(plan.id, "ready");
+  console.log(chalk.green(`✓ Plan "${plan.title}" approved and ready`));
+  console.log(chalk.gray(`Run 'taskctl plan start ${shortId(plan.id)}' to begin execution`));
 }
 
 async function createNewPlan(
