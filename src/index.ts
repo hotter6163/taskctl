@@ -7,6 +7,8 @@ import { registerProjectCommand } from "./commands/project.js";
 import { registerPlanCommand } from "./commands/plan.js";
 import { registerTaskCommand } from "./commands/task.js";
 import { registerWorktreeCommand } from "./commands/worktree.js";
+import { registerExecCommand } from "./commands/exec.js";
+import { registerPrCommand } from "./commands/pr.js";
 import { registerStatusCommand } from "./commands/status.js";
 
 const program = new Command();
@@ -24,6 +26,8 @@ registerProjectCommand(program);
 registerPlanCommand(program);
 registerTaskCommand(program);
 registerWorktreeCommand(program);
+registerExecCommand(program);
+registerPrCommand(program);
 registerStatusCommand(program);
 
 // Initialize database and run
