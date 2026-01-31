@@ -6,8 +6,8 @@ import { registerInitCommand } from "./commands/init.js";
 import { registerProjectCommand } from "./commands/project.js";
 import { registerPlanCommand } from "./commands/plan.js";
 import { registerTaskCommand } from "./commands/task.js";
-import { registerWorktreeCommand } from "./commands/worktree.js";
-import { registerExecCommand } from "./commands/exec.js";
+import { registerSessionCommand } from "./commands/session.js";
+import { registerMcpCommand } from "./commands/mcp.js";
 import { registerPrCommand } from "./commands/pr.js";
 import { registerStatusCommand } from "./commands/status.js";
 
@@ -15,8 +15,8 @@ const program = new Command();
 
 program
   .name("taskctl")
-  .description("AI-Powered Task Management CLI using Mastra framework")
-  .version("0.1.0")
+  .description("AI-Powered Task Management CLI with Claude Code session management")
+  .version("0.2.0")
   .option("-v, --verbose", "Enable verbose output")
   .option("-q, --quiet", "Minimize output");
 
@@ -25,8 +25,8 @@ registerInitCommand(program);
 registerProjectCommand(program);
 registerPlanCommand(program);
 registerTaskCommand(program);
-registerWorktreeCommand(program);
-registerExecCommand(program);
+registerSessionCommand(program);
+registerMcpCommand(program);
 registerPrCommand(program);
 registerStatusCommand(program);
 

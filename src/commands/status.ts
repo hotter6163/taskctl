@@ -3,7 +3,7 @@ import chalk from "chalk";
 import { getCurrentProject } from "./project.js";
 import { getPlansByProject, getPlanById } from "../db/repositories/plan.js";
 import { getTasksByPlan } from "../db/repositories/task.js";
-import { getWorktreesByProject } from "../db/repositories/worktree.js";
+import { getPrByTaskId } from "../db/repositories/pr.js";
 import { shortId } from "../utils/id.js";
 
 export function registerStatusCommand(program: Command): void {
@@ -35,10 +35,9 @@ interface StatusData {
       completed: number;
     };
   }[];
-  worktrees: {
+  sessions: {
+    active: number;
     total: number;
-    available: number;
-    inUse: number;
   };
 }
 
@@ -53,8 +52,6 @@ async function showStatus(options: { planId?: string; json?: boolean }): Promise
     }
     process.exit(1);
   }
-
-  const worktrees = await getWorktreesByProject(project.id);
 
   let plans;
   if (options.planId) {
@@ -72,6 +69,10 @@ async function showStatus(options: { planId?: string; json?: boolean }): Promise
     plans = await getPlansByProject(project.id);
   }
 
+  // Count sessions across all plans
+  let activeSessionCount = 0;
+  let totalSessionCount = 0;
+
   // Build status data
   const statusData: StatusData = {
     project: {
@@ -81,15 +82,21 @@ async function showStatus(options: { planId?: string; json?: boolean }): Promise
       mainBranch: project.mainBranch,
     },
     plans: [],
-    worktrees: {
-      total: worktrees.length,
-      available: worktrees.filter((w) => w.status === "available").length,
-      inUse: worktrees.filter((w) => w.status !== "available").length,
-    },
+    sessions: { active: 0, total: 0 },
   };
 
   for (const plan of plans) {
     const tasks = await getTasksByPlan(plan.id);
+
+    for (const task of tasks) {
+      if (task.sessionId) {
+        totalSessionCount++;
+        if (task.status === "in_progress") {
+          activeSessionCount++;
+        }
+      }
+    }
+
     statusData.plans.push({
       id: plan.id,
       title: plan.title,
@@ -99,7 +106,6 @@ async function showStatus(options: { planId?: string; json?: boolean }): Promise
         pending: tasks.filter((t) => t.status === "pending" || t.status === "ready").length,
         inProgress: tasks.filter(
           (t) =>
-            t.status === "assigned" ||
             t.status === "in_progress" ||
             t.status === "pr_created" ||
             t.status === "in_review"
@@ -108,6 +114,8 @@ async function showStatus(options: { planId?: string; json?: boolean }): Promise
       },
     });
   }
+
+  statusData.sessions = { active: activeSessionCount, total: totalSessionCount };
 
   if (options.json) {
     console.log(JSON.stringify(statusData, null, 2));
@@ -120,13 +128,11 @@ async function showStatus(options: { planId?: string; json?: boolean }): Promise
   console.log(chalk.gray(`  ${project.path}`));
   console.log("");
 
-  // Worktrees summary
+  // Sessions summary
   console.log(
-    chalk.bold("Worktrees: ") +
-      chalk.green(`${statusData.worktrees.available} available`) +
-      chalk.gray(" / ") +
-      chalk.yellow(`${statusData.worktrees.inUse} in use`) +
-      chalk.gray(` / ${statusData.worktrees.total} total`)
+    chalk.bold("Sessions: ") +
+      chalk.green(`${statusData.sessions.active} active`) +
+      chalk.gray(` / ${statusData.sessions.total} registered`)
   );
   console.log("");
 
@@ -188,10 +194,10 @@ async function showStatus(options: { planId?: string; json?: boolean }): Promise
         );
         for (const task of levelTasks) {
           const statusIcon = getStatusIcon(task.status);
-          const taskInfo = task.worktreeId
-            ? chalk.gray(` → wt`)
+          const sessionInfo = task.sessionId
+            ? chalk.gray(` session:${task.sessionId.substring(0, 8)}...`)
             : "";
-          console.log(`      ${statusIcon} [${shortId(task.id)}] ${task.title}${taskInfo}`);
+          console.log(`      ${statusIcon} [${shortId(task.id)}] ${task.title}${sessionInfo}`);
         }
       }
     }
@@ -199,15 +205,26 @@ async function showStatus(options: { planId?: string; json?: boolean }): Promise
     console.log("");
   }
 
-  // Show in-use worktrees detail
-  const inUseWorktrees = worktrees.filter((w) => w.status !== "available");
-  if (inUseWorktrees.length > 0) {
-    console.log(chalk.bold("Active Worktrees:"));
-    for (const wt of inUseWorktrees) {
-      const statusColor = getWorktreeStatusColor(wt.status);
-      console.log(`  ${wt.name}: ${statusColor(wt.status)}${wt.branch ? ` (${wt.branch})` : ""}`);
+  // Show PRs summary
+  for (const plan of plans) {
+    const tasks = await getTasksByPlan(plan.id);
+    const prsForPlan: Array<{ number: number; title: string; status: string }> = [];
+
+    for (const task of tasks) {
+      const pr = await getPrByTaskId(task.id);
+      if (pr) {
+        prsForPlan.push({ number: pr.number, title: task.title, status: pr.status });
+      }
     }
-    console.log("");
+
+    if (prsForPlan.length > 0) {
+      console.log(chalk.bold("PRs:"));
+      for (const pr of prsForPlan) {
+        const statusColor = getPrStatusColor(pr.status);
+        console.log(`  #${pr.number} ${pr.title} ${statusColor(`[${pr.status}]`)}`);
+      }
+      console.log("");
+    }
   }
 }
 
@@ -220,7 +237,7 @@ async function findPlan(planId: string, projectId: string) {
 }
 
 function groupByLevel(
-  tasks: { id: string; level: number; title: string; status: string; worktreeId: string | null }[]
+  tasks: { id: string; level: number; title: string; status: string; sessionId: string | null }[]
 ): Record<number, typeof tasks> {
   return tasks.reduce(
     (acc, task) => {
@@ -252,19 +269,19 @@ function getPlanStatusColor(status: string) {
   }
 }
 
-function getWorktreeStatusColor(status: string) {
+function getPrStatusColor(status: string) {
   switch (status) {
-    case "available":
-      return chalk.green;
-    case "assigned":
+    case "draft":
+      return chalk.gray;
+    case "open":
       return chalk.blue;
-    case "in_progress":
+    case "in_review":
       return chalk.yellow;
-    case "pr_pending":
+    case "approved":
+      return chalk.green;
+    case "merged":
       return chalk.magenta;
-    case "completed":
-      return chalk.cyan;
-    case "error":
+    case "closed":
       return chalk.red;
     default:
       return chalk.white;
@@ -277,8 +294,6 @@ function getStatusIcon(status: string): string {
       return chalk.gray("○");
     case "ready":
       return chalk.cyan("◎");
-    case "assigned":
-      return chalk.blue("●");
     case "in_progress":
       return chalk.yellow("→");
     case "pr_created":

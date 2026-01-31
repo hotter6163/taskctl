@@ -45,20 +45,6 @@ export function getLogsDir(): string {
 }
 
 /**
- * Get the project-local config directory
- */
-export function getProjectConfigDir(projectPath: string): string {
-  return join(projectPath, ".taskctl");
-}
-
-/**
- * Get the project-local config file path
- */
-export function getProjectConfigPath(projectPath: string): string {
-  return join(getProjectConfigDir(projectPath), "config.json");
-}
-
-/**
  * Ensure a directory exists, create it if it doesn't
  */
 export function ensureDir(dirPath: string): void {
@@ -73,21 +59,4 @@ export function ensureDir(dirPath: string): void {
 export function ensureAppDataDir(): void {
   ensureDir(getAppDataDir());
   ensureDir(getLogsDir());
-}
-
-/**
- * Get the worktree base directory for a project
- * Worktrees are created as siblings to the main repo
- */
-export function getWorktreeBasePath(projectPath: string, projectName: string): string {
-  const parentDir = join(projectPath, "..");
-  return join(parentDir, `${projectName}-worktrees`);
-}
-
-/**
- * Get the path for a specific worktree
- */
-export function getWorktreePath(projectPath: string, projectName: string, index: number): string {
-  const basePath = getWorktreeBasePath(projectPath, projectName);
-  return join(basePath, `${projectName}${index}`);
 }

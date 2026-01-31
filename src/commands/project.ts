@@ -3,16 +3,12 @@ import { resolve } from "node:path";
 import chalk from "chalk";
 import {
   getAllProjects,
-  getProjectById,
   getProjectByPath,
   updateProject,
   deleteProject,
 } from "../db/repositories/project.js";
-import { deleteWorktreesByProject, getWorktreesByProject } from "../db/repositories/worktree.js";
-import { loadProjectConfig, saveProjectConfig } from "../utils/config.js";
 import { shortId } from "../utils/id.js";
-import { removeWorktree } from "../integrations/git.js";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import ora from "ora";
 
 export function registerProjectCommand(program: Command): void {
@@ -45,16 +41,15 @@ export function registerProjectCommand(program: Command): void {
   projectCmd
     .command("config")
     .description("Update project configuration")
-    .option("-w, --worktrees <count>", "Update worktree count", parseInt)
     .option("-b, --main-branch <branch>", "Update main branch")
-    .action(async (options: { worktrees?: number; mainBranch?: string }) => {
+    .action(async (options: { mainBranch?: string }) => {
       await configureProject(options);
     });
 
   projectCmd
     .command("remove [project-id]")
     .description("Remove a project from taskctl")
-    .option("-f, --force", "Force removal including worktrees")
+    .option("-f, --force", "Force removal")
     .action(async (projectId: string | undefined, options: { force?: boolean }) => {
       await removeProject(projectId, options);
     });
@@ -88,7 +83,6 @@ async function showProject(projectId?: string): Promise<void> {
   let project;
 
   if (projectId) {
-    // Try to find by ID (full or short)
     const projects = await getAllProjects();
     project = projects.find((p) => p.id === projectId || p.id.startsWith(projectId));
     if (!project) {
@@ -96,7 +90,6 @@ async function showProject(projectId?: string): Promise<void> {
       process.exit(1);
     }
   } else {
-    // Use current directory
     project = await getCurrentProject();
     if (!project) {
       console.error(chalk.red("No project found in current directory"));
@@ -105,16 +98,12 @@ async function showProject(projectId?: string): Promise<void> {
     }
   }
 
-  const worktrees = await getWorktreesByProject(project.id);
-  const availableCount = worktrees.filter((w) => w.status === "available").length;
-
   console.log("");
   console.log(chalk.bold(`Project: ${project.name}`));
   console.log("");
   console.log(`  ${chalk.bold("ID:")}            ${project.id}`);
   console.log(`  ${chalk.bold("Path:")}          ${project.path}`);
   console.log(`  ${chalk.bold("Main branch:")}   ${project.mainBranch}`);
-  console.log(`  ${chalk.bold("Worktrees:")}     ${availableCount}/${worktrees.length} available`);
   if (project.remoteUrl) {
     console.log(`  ${chalk.bold("Remote:")}        ${project.remoteUrl}`);
   }
@@ -135,7 +124,6 @@ async function showCurrentProject(): Promise<void> {
 }
 
 async function configureProject(options: {
-  worktrees?: number;
   mainBranch?: string;
 }): Promise<void> {
   const project = await getCurrentProject();
@@ -144,11 +132,8 @@ async function configureProject(options: {
     process.exit(1);
   }
 
-  const updates: { worktreeCount?: number; mainBranch?: string } = {};
+  const updates: { mainBranch?: string } = {};
 
-  if (options.worktrees !== undefined) {
-    updates.worktreeCount = options.worktrees;
-  }
   if (options.mainBranch !== undefined) {
     updates.mainBranch = options.mainBranch;
   }
@@ -158,27 +143,13 @@ async function configureProject(options: {
     return;
   }
 
-  const updated = await updateProject(project.id, updates);
-  if (updated) {
-    // Update local config
-    saveProjectConfig(project.path, {
-      projectId: updated.id,
-      name: updated.name,
-      worktreeCount: updated.worktreeCount,
-      mainBranch: updated.mainBranch,
-    });
-
-    console.log(chalk.green("Project configuration updated"));
-    if (options.worktrees !== undefined) {
-      console.log(chalk.yellow("Note: Changing worktree count does not add/remove worktrees"));
-      console.log(chalk.yellow("Use 'taskctl wt init' to adjust worktree pool"));
-    }
-  }
+  await updateProject(project.id, updates);
+  console.log(chalk.green("Project configuration updated"));
 }
 
 async function removeProject(
   projectId: string | undefined,
-  options: { force?: boolean }
+  _options: { force?: boolean }
 ): Promise<void> {
   let project;
 
@@ -197,45 +168,10 @@ async function removeProject(
     }
   }
 
-  const worktrees = await getWorktreesByProject(project.id);
-  const inUseWorktrees = worktrees.filter((w) => w.status !== "available");
-
-  if (inUseWorktrees.length > 0 && !options.force) {
-    console.error(chalk.red("Cannot remove project: some worktrees are in use"));
-    console.error(chalk.gray("Use --force to remove anyway"));
-    process.exit(1);
-  }
-
   const spinner = ora("Removing project...").start();
 
   try {
-    // Remove worktrees
-    if (options.force) {
-      for (const wt of worktrees) {
-        try {
-          spinner.text = `Removing worktree ${wt.name}...`;
-          if (existsSync(wt.path)) {
-            await removeWorktree(project.path, wt.path);
-          }
-        } catch {
-          // Try to remove directory directly if git worktree remove fails
-          if (existsSync(wt.path)) {
-            rmSync(wt.path, { recursive: true, force: true });
-          }
-        }
-      }
-      await deleteWorktreesByProject(project.id);
-    }
-
-    // Remove project from database
     await deleteProject(project.id);
-
-    // Remove local config
-    const configPath = resolve(project.path, ".taskctl");
-    if (existsSync(configPath)) {
-      rmSync(configPath, { recursive: true, force: true });
-    }
-
     spinner.succeed(`Project ${project.name} removed`);
   } catch (error) {
     spinner.fail("Failed to remove project");
@@ -245,14 +181,6 @@ async function removeProject(
 
 async function getCurrentProject() {
   const currentPath = resolve(process.cwd());
-
-  // First try to get from local config
-  const localConfig = loadProjectConfig(currentPath);
-  if (localConfig) {
-    return getProjectById(localConfig.projectId);
-  }
-
-  // Try to find by path
   return getProjectByPath(currentPath);
 }
 

@@ -8,16 +8,12 @@ import {
   getRemoteUrl,
   cloneRepo,
   getRepoName,
-  addWorktree,
 } from "../integrations/git.js";
 import { createProject, getProjectByPath } from "../db/repositories/project.js";
-import { createWorktree } from "../db/repositories/worktree.js";
-import { saveProjectConfig, loadGlobalConfig } from "../utils/config.js";
-import { getWorktreeBasePath, getWorktreePath, ensureDir } from "../utils/paths.js";
+import { loadGlobalConfig } from "../utils/config.js";
 
 interface InitOptions {
   clone?: string;
-  worktrees?: number;
   mainBranch?: string;
   name?: string;
 }
@@ -27,7 +23,6 @@ export function registerInitCommand(program: Command): void {
     .command("init")
     .description("Initialize a project under taskctl management")
     .option("-c, --clone <url>", "Clone a repository and initialize")
-    .option("-w, --worktrees <count>", "Number of worktrees to create", parseInt)
     .option("-b, --main-branch <branch>", "Main branch name")
     .option("-n, --name <name>", "Project name")
     .action(async (options: InitOptions) => {
@@ -37,7 +32,6 @@ export function registerInitCommand(program: Command): void {
 
 async function initProject(options: InitOptions): Promise<void> {
   const globalConfig = loadGlobalConfig();
-  const worktreeCount = options.worktrees ?? globalConfig.defaultWorktreeCount;
   const mainBranch = options.mainBranch ?? globalConfig.defaultMainBranch;
 
   let projectPath: string;
@@ -93,30 +87,17 @@ async function initProject(options: InitOptions): Promise<void> {
       path: projectPath,
       remoteUrl,
       mainBranch,
-      worktreeCount,
-    });
-
-    // Save project config locally
-    saveProjectConfig(projectPath, {
-      projectId: project.id,
-      name: projectName,
-      worktreeCount,
-      mainBranch,
     });
 
     spinner.succeed("Project registered");
 
-    // Create worktree pool
-    await createWorktreePool(project.id, projectPath, projectName, worktreeCount);
-
     console.log("");
-    console.log(chalk.green("✓ Project initialized successfully!"));
+    console.log(chalk.green("Project initialized successfully!"));
     console.log("");
     console.log(`  ${chalk.bold("Project ID:")}    ${project.id}`);
     console.log(`  ${chalk.bold("Name:")}          ${projectName}`);
     console.log(`  ${chalk.bold("Path:")}          ${projectPath}`);
     console.log(`  ${chalk.bold("Main branch:")}   ${mainBranch}`);
-    console.log(`  ${chalk.bold("Worktrees:")}     ${worktreeCount}`);
     if (remoteUrl) {
       console.log(`  ${chalk.bold("Remote:")}        ${remoteUrl}`);
     }
@@ -127,44 +108,6 @@ async function initProject(options: InitOptions): Promise<void> {
     console.log(chalk.gray("  3. taskctl status                 # View project status"));
   } catch (error) {
     spinner.fail("Failed to initialize project");
-    throw error;
-  }
-}
-
-async function createWorktreePool(
-  projectId: string,
-  projectPath: string,
-  projectName: string,
-  count: number
-): Promise<void> {
-  const spinner = ora(`Creating ${count} worktrees...`).start();
-
-  try {
-    // Create worktree base directory
-    const basePath = getWorktreeBasePath(projectPath, projectName);
-    ensureDir(basePath);
-
-    for (let i = 0; i < count; i++) {
-      const wtName = `${projectName}${i}`;
-      const wtPath = getWorktreePath(projectPath, projectName, i);
-
-      spinner.text = `Creating worktree ${i + 1}/${count}: ${wtName}`;
-
-      // Create git worktree (detached HEAD)
-      await addWorktree(projectPath, wtPath);
-
-      // Register in database
-      await createWorktree({
-        projectId,
-        name: wtName,
-        path: wtPath,
-        status: "available",
-      });
-    }
-
-    spinner.succeed(`Created ${count} worktrees`);
-  } catch (error) {
-    spinner.fail("Failed to create worktrees");
     throw error;
   }
 }

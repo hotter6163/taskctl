@@ -35,7 +35,6 @@ export async function initDb(): Promise<void> {
       path TEXT NOT NULL UNIQUE,
       remote_url TEXT,
       main_branch TEXT NOT NULL DEFAULT 'main',
-      worktree_count INTEGER NOT NULL DEFAULT 10,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
@@ -55,20 +54,6 @@ export async function initDb(): Promise<void> {
   `);
 
   await database.run(`
-    CREATE TABLE IF NOT EXISTS worktrees (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      path TEXT NOT NULL,
-      branch TEXT,
-      status TEXT NOT NULL DEFAULT 'available',
-      task_id TEXT,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
-    )
-  `);
-
-  await database.run(`
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
       plan_id TEXT NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
@@ -77,8 +62,8 @@ export async function initDb(): Promise<void> {
       status TEXT NOT NULL DEFAULT 'pending',
       level INTEGER NOT NULL DEFAULT 0,
       estimated_lines INTEGER,
-      worktree_id TEXT REFERENCES worktrees(id) ON DELETE SET NULL,
       branch_name TEXT,
+      session_id TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )
@@ -98,7 +83,6 @@ export async function initDb(): Promise<void> {
     CREATE TABLE IF NOT EXISTS prs (
       id TEXT PRIMARY KEY,
       task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-      worktree_id TEXT NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
       number INTEGER NOT NULL,
       url TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'draft',
@@ -112,11 +96,13 @@ export async function initDb(): Promise<void> {
   // Create indexes for common queries
   await database.run(`CREATE INDEX IF NOT EXISTS idx_plans_project_id ON plans(project_id)`);
   await database.run(`CREATE INDEX IF NOT EXISTS idx_tasks_plan_id ON tasks(plan_id)`);
-  await database.run(`CREATE INDEX IF NOT EXISTS idx_worktrees_project_id ON worktrees(project_id)`);
+  await database.run(`CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)`);
+  await database.run(`CREATE INDEX IF NOT EXISTS idx_tasks_branch_name ON tasks(branch_name)`);
   await database.run(`CREATE INDEX IF NOT EXISTS idx_task_deps_task_id ON task_deps(task_id)`);
   await database.run(
     `CREATE INDEX IF NOT EXISTS idx_task_deps_depends_on_id ON task_deps(depends_on_id)`
   );
+  await database.run(`CREATE INDEX IF NOT EXISTS idx_prs_task_id ON prs(task_id)`);
 }
 
 /**

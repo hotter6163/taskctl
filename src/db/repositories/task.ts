@@ -1,4 +1,4 @@
-import { eq, and } from "drizzle-orm";
+import { eq, and, like, isNotNull } from "drizzle-orm";
 import {
   getDb,
   tasks,
@@ -37,6 +37,20 @@ export async function getTaskById(id: string): Promise<Task | null> {
   const db = getDb();
   const result = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
   return result[0] ?? null;
+}
+
+/**
+ * Get a task by ID prefix (for shorthand lookups)
+ */
+export async function getTaskByIdPrefix(prefix: string): Promise<Task | null> {
+  const db = getDb();
+  const result = await db
+    .select()
+    .from(tasks)
+    .where(like(tasks.id, `${prefix}%`))
+    .limit(2);
+  if (result.length === 1) return result[0] ?? null;
+  return null;
 }
 
 /**
@@ -103,6 +117,65 @@ export async function deleteTask(id: string): Promise<boolean> {
   const db = getDb();
   const result = await db.delete(tasks).where(eq(tasks.id, id));
   return (result.rowsAffected ?? 0) > 0;
+}
+
+/**
+ * Find task by session ID
+ */
+export async function getTaskBySessionId(sessionId: string): Promise<Task | null> {
+  const db = getDb();
+  const result = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.sessionId, sessionId))
+    .limit(1);
+  return result[0] ?? null;
+}
+
+/**
+ * Find task by branch name
+ */
+export async function getTaskByBranchName(branchName: string): Promise<Task | null> {
+  const db = getDb();
+  const result = await db
+    .select()
+    .from(tasks)
+    .where(eq(tasks.branchName, branchName))
+    .limit(1);
+  return result[0] ?? null;
+}
+
+/**
+ * Set session ID for a task
+ */
+export async function setTaskSessionId(taskId: string, sessionId: string): Promise<Task | null> {
+  return updateTask(taskId, { sessionId });
+}
+
+/**
+ * Clear session ID for a task
+ */
+export async function clearTaskSessionId(taskId: string): Promise<Task | null> {
+  return updateTask(taskId, { sessionId: null });
+}
+
+/**
+ * Get tasks that have active sessions
+ */
+export async function getTasksWithSessions(planId?: string): Promise<Task[]> {
+  const db = getDb();
+  if (planId) {
+    return db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.planId, planId), isNotNull(tasks.sessionId)))
+      .orderBy(tasks.level, tasks.id);
+  }
+  return db
+    .select()
+    .from(tasks)
+    .where(isNotNull(tasks.sessionId))
+    .orderBy(tasks.level, tasks.id);
 }
 
 /**

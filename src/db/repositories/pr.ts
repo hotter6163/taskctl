@@ -49,14 +49,6 @@ export async function getPrByNumber(number: number): Promise<Pr | null> {
 }
 
 /**
- * Get all PRs for a worktree
- */
-export async function getPrsByWorktree(worktreeId: string): Promise<Pr[]> {
-  const db = getDb();
-  return db.select().from(prs).where(eq(prs.worktreeId, worktreeId)).orderBy(prs.createdAt);
-}
-
-/**
  * Update a PR
  */
 export async function updatePr(

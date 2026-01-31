@@ -9,7 +9,6 @@ import {
   getPrByTaskId,
   updatePrStatus,
 } from "../db/repositories/pr.js";
-import { getWorktreeById, updateWorktreeStatus, releaseWorktree } from "../db/repositories/worktree.js";
 import {
   createPr as ghCreatePr,
   getPr as ghGetPr,
@@ -99,16 +98,10 @@ async function createPr(
     return;
   }
 
-  // Check if task has a worktree
-  if (!task.worktreeId || !task.branchName) {
-    console.error(chalk.red("Task is not assigned to a worktree"));
+  // Check if task has a branch
+  if (!task.branchName) {
+    console.error(chalk.red("Task has no branch assigned"));
     console.error(chalk.gray("Start the task first with: taskctl task start <task-id>"));
-    process.exit(1);
-  }
-
-  const worktree = await getWorktreeById(task.worktreeId);
-  if (!worktree) {
-    console.error(chalk.red("Worktree not found"));
     process.exit(1);
   }
 
@@ -121,9 +114,9 @@ async function createPr(
   const spinner = ora("Creating pull request...").start();
 
   try {
-    // Push branch to remote
+    // Push branch to remote from the project path
     spinner.text = "Pushing branch to remote...";
-    await push(worktree.path, "origin", task.branchName, true);
+    await push(project.path, "origin", task.branchName, true);
 
     // Create PR
     spinner.text = "Creating PR on GitHub...";
@@ -131,7 +124,7 @@ async function createPr(
     const prTitle = options.title ?? task.title;
     const prBody = generatePrBody(task, plan);
 
-    const prInfo = await ghCreatePr(worktree.path, {
+    const prInfo = await ghCreatePr(project.path, {
       title: prTitle,
       body: prBody,
       baseBranch: plan.sourceBranch,
@@ -142,7 +135,6 @@ async function createPr(
     // Save PR to database
     await createPrRecord({
       taskId: task.id,
-      worktreeId: worktree.id,
       number: prInfo.number,
       url: prInfo.url,
       status: options.draft ? "draft" : "open",
@@ -152,12 +144,11 @@ async function createPr(
 
     // Update task status
     await updateTaskStatus(task.id, "pr_created");
-    await updateWorktreeStatus(worktree.id, "pr_pending");
 
     spinner.succeed("Pull request created");
 
     console.log("");
-    console.log(chalk.green(`✓ PR #${prInfo.number} created`));
+    console.log(chalk.green(`PR #${prInfo.number} created`));
     console.log(`  URL: ${chalk.cyan(prInfo.url)}`);
     console.log("");
   } catch (error) {
@@ -270,9 +261,6 @@ async function syncPrs(taskId?: string): Promise<void> {
       // Update task status if PR is merged
       if (newStatus === "merged") {
         await updateTaskStatus(task.id, "completed");
-        if (task.worktreeId) {
-          await releaseWorktree(task.worktreeId);
-        }
       }
 
       spinner.succeed(`PR #${pr.number} synced: ${newStatus}`);
@@ -297,9 +285,6 @@ async function syncPrs(taskId?: string): Promise<void> {
 
             if (newStatus === "merged") {
               await updateTaskStatus(task.id, "completed");
-              if (task.worktreeId) {
-                await releaseWorktree(task.worktreeId);
-              }
             }
 
             syncedCount++;
@@ -355,10 +340,6 @@ async function mergePr(taskId: string, options: { squash?: boolean }): Promise<v
 
     await updatePrStatus(pr.id, "merged");
     await updateTaskStatus(task.id, "completed");
-
-    if (task.worktreeId) {
-      await releaseWorktree(task.worktreeId);
-    }
 
     spinner.succeed(`PR #${pr.number} merged`);
   } catch (error) {

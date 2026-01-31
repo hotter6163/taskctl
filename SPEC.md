@@ -8,22 +8,23 @@
 
 ### 1.1 目的
 
-taskctl は、Mastra フレームワークを使用した AI 駆動のタスク管理 CLI ツールです。Git worktree を活用して並行開発を行い、AI が Google の Small CL (Changelist) プラクティスに基づいてタスクを分割・計画します。
+taskctl は、AI 駆動のタスク計画 + Claude Code セッション管理 CLI ツールです。大きな開発タスクを Small CL (Changelist) に分割し、各タスクと Claude Code セッションを 1:1 で紐付けて管理します。MCP サーバーを通じて Claude Code から直接タスク情報を参照できます。
 
 ### 1.2 主要な特徴
 
 - **Small CL 分割**: AI が大きなタスクを ~100行程度の小さな変更単位に分割
-- **Worktree プール**: 複数の worktree を事前作成し、並行開発を実現
-- **依存関係グラフ**: タスク間の依存関係を DAG として管理
-- **Human-in-the-loop**: AI が提案し、人間が確認・修正するワークフロー
+- **セッション管理**: タスクごとに Claude Code セッション ID を管理し、作業の中断・再開を容易に
+- **ブランチ ↔ セッション 1:1 マッピング**: 作業ブランチと Claude Code セッションが一意に対応
+- **MCP 統合**: Claude Code から plan/task 情報を MCP 経由で参照
+- **依存関係グラフ**: タスク間の依存関係を DAG として管理・可視化
 - **GitHub 統合**: gh CLI を使用した PR 管理
 
 ### 1.3 ユースケース
 
 1. **大規模機能開発**: 新機能を小さな PR に分割して段階的にマージ
-2. **リファクタリング**: 影響範囲を最小化した安全なリファクタリング
-3. **並行タスク実行**: 依存関係のないタスクを複数の worktree で同時進行
-4. **チーム開発**: 複数人での協調的な PR レビューフロー
+2. **Claude Code 連携**: 各タスクのコンテキストを MCP 経由で Claude Code に提供
+3. **作業の中断・再開**: セッション ID で Claude Code の会話を再開
+4. **チーム開発**: タスクの依存関係と進捗を可視化
 
 ---
 
@@ -32,36 +33,50 @@ taskctl は、Mastra フレームワークを使用した AI 駆動のタスク�
 ### 2.1 コンポーネント構成
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        CLI Layer                             │
-│  (Commander.js)                                              │
-│  ┌─────┬─────┬─────┬─────┬─────┬─────┬─────┬─────┐         │
-│  │init │plan │task │ wt  │exec │ pr  │status│project│        │
-│  └──┬──┴──┬──┴──┬──┴──┬──┴──┬──┴──┬──┴──┬──┴──┬──┘         │
-└─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────┼─────────────┘
-      │     │     │     │     │     │     │     │
-┌─────▼─────▼─────▼─────▼─────▼─────▼─────▼─────▼─────────────┐
-│                      Core Services                           │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │   Mastra     │  │  Worktree    │  │  Dependency  │       │
-│  │   Agents     │  │  Pool Mgr    │  │  Graph       │       │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘       │
-└─────────┼─────────────────┼─────────────────┼───────────────┘
-          │                 │                 │
-┌─────────▼─────────────────▼─────────────────▼───────────────┐
-│                    Data Access Layer                         │
-│  ┌──────────────────────────────────────────────────┐       │
-│  │              SQLite (LibSQL) + Drizzle ORM       │       │
-│  └──────────────────────────────────────────────────┘       │
-└─────────────────────────────────────────────────────────────┘
-          │                 │
-┌─────────▼─────────────────▼─────────────────────────────────┐
-│                    External Services                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │  Anthropic   │  │  Git CLI     │  │  GitHub CLI  │       │
-│  │  Claude API  │  │              │  │  (gh)        │       │
-│  └──────────────┘  └──────────────┘  └──────────────┘       │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                    Claude Code (Client)                    │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  MCP Client (connects to taskctl MCP Server)       │  │
+│  └────────────────────┬───────────────────────────────┘  │
+└───────────────────────┼──────────────────────────────────┘
+                        │ stdio
+┌───────────────────────▼──────────────────────────────────┐
+│                   taskctl MCP Server                      │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
+│  │ Plan Tools  │  │ Task Tools  │  │ Write Tools │      │
+│  │ (get/list)  │  │ (get/list)  │  │ (future)    │      │
+│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘      │
+└─────────┼────────────────┼────────────────┼──────────────┘
+          │                │                │
+┌─────────▼────────────────▼────────────────▼──────────────┐
+│                    Core Services                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │ Plan Service │  │ Task Service │  │Session Svc   │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘   │
+└─────────┼────────────────┼────────────────┼──────────────┘
+          │                │                │
+┌─────────▼────────────────▼────────────────▼──────────────┐
+│                   CLI Layer (Commander.js)                 │
+│  ┌─────┬──────┬─────┬────────┬────┬────────┬──────┐     │
+│  │init │plan  │task │session │ pr │status  │ mcp  │     │
+│  └─────┴──────┴─────┴────────┴────┴────────┴──────┘     │
+└──────────────────────────┬───────────────────────────────┘
+                           │
+┌──────────────────────────▼───────────────────────────────┐
+│                    Data Access Layer                       │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │              SQLite (LibSQL) + Drizzle ORM          │  │
+│  │  projects │ plans │ tasks │ task_deps │ prs         │  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────┬───────────────────────────────┘
+                           │
+┌──────────────────────────▼───────────────────────────────┐
+│                    External Services                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │  Anthropic   │  │  Git CLI     │  │  GitHub CLI  │   │
+│  │  Claude API  │  │              │  │  (gh)        │   │
+│  └──────────────┘  └──────────────┘  └──────────────┘   │
+└──────────────────────────────────────────────────────────┘
 ```
 
 ### 2.2 ディレクトリ構造
@@ -74,34 +89,40 @@ src/
 │   ├── project.ts             # プロジェクト管理
 │   ├── plan.ts                # プラン管理
 │   ├── task.ts                # タスク管理
-│   ├── worktree.ts            # Worktree 管理
+│   ├── session.ts             # セッション管理
+│   ├── mcp.ts                 # MCP サーバー起動
 │   ├── pr.ts                  # PR 管理
-│   ├── exec.ts                # 実行コマンド
 │   └── status.ts              # ステータス表示
-├── mastra/                     # Mastra 設定
+├── mcp/                        # MCP サーバー
+│   ├── index.ts               # McpServer セットアップ
+│   ├── tools/
+│   │   ├── plan-tools.ts      # get_plan, list_plans
+│   │   ├── task-tools.ts      # get_task, list_tasks, get_current_task
+│   │   └── write-tools.ts     # claim_task 等 (Phase 2)
+│   └── utils.ts               # MCP 共通ユーティリティ
+├── services/                   # 共有ビジネスロジック
+│   ├── plan-service.ts        # Plan 操作
+│   ├── task-service.ts        # Task 操作
+│   ├── session-service.ts     # Session マッピング
+│   └── pr-service.ts          # PR 操作
+├── mastra/                     # AI 連携 (Planning Agent のみ)
 │   ├── index.ts               # Mastra インスタンス
 │   ├── agents/
-│   │   ├── planning.ts        # タスク分割 Agent
-│   │   ├── implementation.ts  # 実装補助 Agent
-│   │   └── pr.ts              # PR 作成 Agent
+│   │   └── planning.ts        # タスク分割 Agent
 │   └── workflows/
-│       ├── planning.ts        # 計画ワークフロー
-│       └── implementation.ts  # 実装ワークフロー
+│       └── planning.ts        # 計画ワークフロー
 ├── db/
 │   ├── schema.ts              # SQLite スキーマ (Drizzle)
 │   ├── index.ts               # データベース接続
-│   ├── migrations/            # マイグレーション
 │   └── repositories/          # データアクセス層
+│       ├── index.ts
 │       ├── project.ts
 │       ├── plan.ts
 │       ├── task.ts
-│       ├── worktree.ts
 │       └── pr.ts
-├── worktree/
-│   └── pool-manager.ts        # Worktree プール管理
 ├── graph/
-│   ├── dependency-graph.ts    # DAG 計算
-│   └── scheduler.ts           # 実行スケジューラー
+│   ├── dependency-graph.ts    # DAG 計算・可視化
+│   └── index.ts
 ├── integrations/
 │   ├── git.ts                 # Git 操作
 │   └── github.ts              # gh CLI ラッパー
@@ -117,8 +138,9 @@ src/
 |-----------|---------|
 | グローバル設定 | `~/Library/Application Support/taskctl/config.json` |
 | SQLite DB | `~/Library/Application Support/taskctl/taskctl.db` |
-| プロジェクト設定 | `<project>/.taskctl/config.json` |
 | ログ | `~/Library/Application Support/taskctl/logs/` |
+
+プロジェクトの識別は DB の `projects.path` (リポジトリルートパスの UNIQUE 制約) で行います。プロジェクトローカルの設定ファイルは使用しません。
 
 ---
 
@@ -134,36 +156,36 @@ src/
 │ name        │   │   │ project_id  │───┘   │ plan_id     │───┐
 │ path        │   │   │ title       │       │ title       │   │
 │ remote_url  │   │   │ description │       │ description │   │
-│ main_branch │   │   │ status      │       │ status      │   │
-│ wt_count    │   │   │ created_at  │       │ level       │   │
-│ created_at  │   │   │ updated_at  │       │ estimated_  │   │
-│ updated_at  │   │   └─────────────┘       │   lines     │   │
-└─────────────┘   │                         │ worktree_id │───┼──┐
-                  │                         │ created_at  │   │  │
-                  │                         │ updated_at  │   │  │
-                  │                         └─────────────┘   │  │
-                  │                               ▲           │  │
-                  │       ┌─────────────┐         │           │  │
-                  │       │ task_deps   │         │           │  │
-                  │       ├─────────────┤         │           │  │
-                  │       │ id (PK)     │         │           │  │
-                  │       │ task_id     │─────────┘           │  │
-                  │       │ depends_on  │─────────────────────┘  │
-                  │       │ created_at  │                        │
-                  │       └─────────────┘                        │
-                  │                                              │
-                  │       ┌─────────────┐       ┌─────────────┐  │
-                  │       │  worktrees  │       │    prs      │  │
-                  │       ├─────────────┤       ├─────────────┤  │
-                  │       │ id (PK)     │◄──────│ id (PK)     │  │
-                  └───────│ project_id  │       │ task_id     │──┘
-                          │ name        │       │ worktree_id │───┘
-                          │ path        │       │ number      │
-                          │ branch      │       │ url         │
-                          │ status      │       │ status      │
-                          │ task_id     │       │ created_at  │
-                          │ created_at  │       │ updated_at  │
-                          │ updated_at  │       └─────────────┘
+│ main_branch │   │   │ source_br.. │       │ status      │   │
+│ created_at  │   │   │ status      │       │ level       │   │
+│ updated_at  │   │   │ created_at  │       │ est._lines  │   │
+└─────────────┘   │   │ updated_at  │       │ branch_name │   │
+                  │   └─────────────┘       │ session_id  │   │
+                  │                         │ created_at  │   │
+                  │                         │ updated_at  │   │
+                  │                         └─────────────┘   │
+                  │                               ▲           │
+                  │       ┌─────────────┐         │           │
+                  │       │ task_deps   │         │           │
+                  │       ├─────────────┤         │           │
+                  │       │ id (PK)     │         │           │
+                  │       │ task_id     │─────────┘           │
+                  │       │ depends_on  │─────────────────────┘
+                  │       │ created_at  │
+                  │       └─────────────┘
+                  │
+                  │       ┌─────────────┐
+                  │       │    prs      │
+                  │       ├─────────────┤
+                  └───────│ id (PK)     │
+                          │ task_id     │
+                          │ number      │
+                          │ url         │
+                          │ status      │
+                          │ base_branch │
+                          │ head_branch │
+                          │ created_at  │
+                          │ updated_at  │
                           └─────────────┘
 ```
 
@@ -175,10 +197,9 @@ src/
 |--------|------|------|
 | id | TEXT (ULID) | 主キー |
 | name | TEXT | プロジェクト名 |
-| path | TEXT | リポジトリのルートパス |
+| path | TEXT | リポジトリのルートパス (UNIQUE) |
 | remote_url | TEXT | リモート URL (nullable) |
 | main_branch | TEXT | メインブランチ名 (default: 'main') |
-| worktree_count | INTEGER | Worktree 数 (default: 10) |
 | created_at | TEXT (ISO8601) | 作成日時 |
 | updated_at | TEXT (ISO8601) | 更新日時 |
 
@@ -208,12 +229,14 @@ src/
 | status | TEXT | ステータス (enum) |
 | level | INTEGER | DAG のレベル (0が最初) |
 | estimated_lines | INTEGER | 推定変更行数 (nullable) |
-| worktree_id | TEXT | 割り当て Worktree ID (nullable, FK) |
 | branch_name | TEXT | ブランチ名 (nullable) |
+| session_id | TEXT | Claude Code セッション ID (nullable) |
 | created_at | TEXT (ISO8601) | 作成日時 |
 | updated_at | TEXT (ISO8601) | 更新日時 |
 
-**status enum**: `pending`, `ready`, `assigned`, `in_progress`, `pr_created`, `in_review`, `completed`, `blocked`
+**status enum**: `pending`, `ready`, `in_progress`, `pr_created`, `in_review`, `completed`, `blocked`
+
+**制約**: branch_name と session_id は 1:1 対応。session_id が設定される場合、必ず branch_name も設定済み。
 
 #### task_deps テーブル
 
@@ -226,29 +249,12 @@ src/
 
 **制約**: UNIQUE(task_id, depends_on_id)
 
-#### worktrees テーブル
-
-| カラム | 型 | 説明 |
-|--------|------|------|
-| id | TEXT (ULID) | 主キー |
-| project_id | TEXT | プロジェクト ID (FK) |
-| name | TEXT | Worktree 名 (例: myproject0) |
-| path | TEXT | Worktree のパス |
-| branch | TEXT | 現在のブランチ名 (nullable) |
-| status | TEXT | ステータス (enum) |
-| task_id | TEXT | 割り当てタスク ID (nullable, FK) |
-| created_at | TEXT (ISO8601) | 作成日時 |
-| updated_at | TEXT (ISO8601) | 更新日時 |
-
-**status enum**: `available`, `assigned`, `in_progress`, `pr_pending`, `completed`, `error`
-
 #### prs テーブル
 
 | カラム | 型 | 説明 |
 |--------|------|------|
 | id | TEXT (ULID) | 主キー |
 | task_id | TEXT | タスク ID (FK) |
-| worktree_id | TEXT | Worktree ID (FK) |
 | number | INTEGER | GitHub PR 番号 |
 | url | TEXT | PR URL |
 | status | TEXT | ステータス (enum) |
@@ -258,6 +264,15 @@ src/
 | updated_at | TEXT (ISO8601) | 更新日時 |
 
 **status enum**: `draft`, `open`, `in_review`, `approved`, `merged`, `closed`
+
+### 3.3 インデックス
+
+```sql
+CREATE INDEX idx_tasks_session_id ON tasks(session_id);
+CREATE INDEX idx_tasks_branch_name ON tasks(branch_name);
+CREATE INDEX idx_tasks_plan_id ON tasks(plan_id);
+CREATE INDEX idx_prs_task_id ON prs(task_id);
+```
 
 ---
 
@@ -277,50 +292,28 @@ src/
 プロジェクトを taskctl の管理下に置く。
 
 ```bash
-# ローカルリポジトリを初期化
 taskctl init
-
-# リポジトリをクローンして初期化
 taskctl init --clone <url>
-
-# Worktree 数を指定
-taskctl init --worktrees 5
-
-# メインブランチを指定
 taskctl init --main-branch master
 ```
 
 | オプション | 短縮 | 説明 | デフォルト |
 |-----------|------|------|-----------|
 | --clone | -c | クローンする URL | - |
-| --worktrees | -w | Worktree 数 | 10 |
 | --main-branch | -b | メインブランチ名 | main |
 | --name | -n | プロジェクト名 | ディレクトリ名 |
 
 **処理フロー**:
 1. リポジトリの検証 (git repo であることを確認)
-2. `.taskctl/` ディレクトリ作成
-3. SQLite にプロジェクト情報を登録
-4. Worktree プールを作成
+2. SQLite にプロジェクト情報を登録
 
 ### 4.3 project コマンド
 
-プロジェクト一覧・管理。
-
 ```bash
-# プロジェクト一覧
 taskctl project list
-
-# プロジェクト詳細
 taskctl project show [project-id]
-
-# 現在のディレクトリのプロジェクトを表示
 taskctl project current
-
-# プロジェクト設定の更新
-taskctl project config --worktrees 15
-
-# プロジェクトを削除 (DBから削除、worktreeも削除)
+taskctl project config --main-branch <branch>
 taskctl project remove [project-id] --force
 ```
 
@@ -329,31 +322,14 @@ taskctl project remove [project-id] --force
 計画の作成・管理。
 
 ```bash
-# 新規プラン作成
 taskctl plan new "<title>" [--description "<desc>"]
-
-# プラン一覧
 taskctl plan list [--status <status>]
-
-# プラン詳細
 taskctl plan show <plan-id>
-
-# AI でタスク生成
 taskctl plan ai generate "<prompt>" [--plan-id <id>]
-
-# AI 生成結果のレビュー
 taskctl plan ai review <plan-id>
-
-# AI 生成結果を承認
 taskctl plan ai approve <plan-id>
-
-# 依存グラフ表示
 taskctl plan graph <plan-id> [--format ascii|mermaid]
-
-# プラン削除
 taskctl plan delete <plan-id>
-
-# プランを開始
 taskctl plan start <plan-id>
 ```
 
@@ -368,650 +344,323 @@ taskctl plan start <plan-id>
 
 ### 4.5 task コマンド
 
-タスクの管理。
-
 ```bash
-# タスク一覧
 taskctl task list [--plan-id <id>] [--status <status>]
-
-# タスク詳細
 taskctl task show <task-id>
-
-# タスク手動追加
 taskctl task add --plan-id <id> --title "<title>" [--depends-on <task-id>...]
-
-# タスク編集
 taskctl task edit <task-id> --title "<title>" --description "<desc>"
-
-# タスク削除
 taskctl task delete <task-id>
-
-# 依存関係追加
 taskctl task depends <task-id> --on <dependency-task-id>
-
-# 依存関係削除
 taskctl task undepends <task-id> --on <dependency-task-id>
-
-# タスクを開始 (worktree 割り当て)
-taskctl task start <task-id>
-
-# タスクを完了
+taskctl task start <task-id>        # ブランチ作成 + status=in_progress
+taskctl task open <task-id>         # Claude Code 起動/再開コマンドを出力
 taskctl task complete <task-id>
 ```
 
-### 4.6 wt (worktree) コマンド
+**`task start` の処理フロー**:
+1. 全依存タスクが completed であることを検証
+2. plan の source_branch からブランチを作成: `feature/<plan-short>/<task-short>-<slug>`
+3. タスクの status を `in_progress`、branch_name を設定
+4. ブランチ名と Claude Code 起動コマンドを表示
 
-Worktree プールの管理。
+**`task open` の処理フロー**:
+1. タスクの session_id を検索
+2. session_id がある場合: `claude --resume <session-id>` を出力
+3. session_id がない場合: `claude` を出力（新規セッション）
+4. `eval $(taskctl task open <id>)` で直接起動可能
 
-```bash
-# Worktree プールを初期化
-taskctl wt init [--count <n>]
+### 4.6 session コマンド
 
-# Worktree 一覧
-taskctl wt list
-
-# Worktree ステータス
-taskctl wt status [worktree-id]
-
-# 特定の worktree をリセット
-taskctl wt reset <worktree-id>
-
-# 全 worktree をリセット (利用可能状態に戻す)
-taskctl wt reset --all
-
-# worktree ディレクトリに移動するコマンドを出力
-taskctl wt cd <worktree-id>
-
-# worktree のパスを表示
-taskctl wt path <worktree-id>
-```
-
-### 4.7 exec コマンド
-
-タスクの実行。
+セッション管理。
 
 ```bash
-# 並行実行 (ready なタスクを同時実行)
-taskctl exec parallel [--plan-id <id>] [--max-concurrent <n>]
-
-# 単一タスク実行
-taskctl exec task <task-id>
-
-# 実行状況確認
-taskctl exec status
-
-# 実行停止
-taskctl exec stop [--all]
+taskctl session set <task-id> <session-id>    # セッション ID を登録
+taskctl session list [--plan-id <id>]          # セッション一覧
+taskctl session clear <task-id>                # セッション ID をクリア
 ```
 
-**並行実行オプション**:
+**`session set` の処理フロー**:
+1. タスクが存在し、status が `in_progress` であることを検証
+2. tasks.session_id を更新
 
-| オプション | 説明 | デフォルト |
-|-----------|------|-----------|
-| --plan-id | 対象プラン | 現在のプラン |
-| --max-concurrent | 最大同時実行数 | worktree 数 |
-| --dry-run | 実行計画のみ表示 | false |
+**出力例** (`session list`):
+```
+Plan: Add authentication feature
+
+  Task ID      Title                    Branch                          Session ID      Status
+  01ARZ4KY     Add User model           feature/01AR/01A4-add-user      ses_abc123      in_progress
+  01ARZ4LM     Add auth middleware       feature/01AR/01A4-add-auth      -               in_progress
+  01ARZ4MN     Add login endpoint        -                               -               ready
+```
+
+### 4.7 mcp コマンド
+
+MCP サーバーを起動。
+
+```bash
+taskctl mcp [--project-path <path>]
+```
+
+**処理フロー**:
+1. DB 初期化
+2. プロジェクト解決 (cwd or --project-path)
+3. McpServer インスタンスを作成
+4. ツールを登録 (Phase 1: read ツール, Phase 2: write ツール)
+5. StdioServerTransport で接続
+6. Claude Code がパイプを閉じるまで待機
 
 ### 4.8 pr コマンド
 
-PR の作成・管理。
-
 ```bash
-# PR 作成
 taskctl pr create <task-id> [--draft] [--title "<title>"]
-
-# PR 一覧
 taskctl pr list [--plan-id <id>] [--status <status>]
-
-# PR ステータス更新
 taskctl pr sync [task-id]
-
-# PR をマージ
 taskctl pr merge <task-id> [--squash]
-
-# PR を閉じる
 taskctl pr close <task-id>
 ```
 
 ### 4.9 status コマンド
 
-全体ステータスのダッシュボード表示。
-
 ```bash
-# 全体ステータス
-taskctl status
-
-# 特定プランのステータス
-taskctl status --plan-id <id>
-
-# JSON 出力
-taskctl status --json
+taskctl status [--plan-id <id>] [--json]
 ```
 
 **出力例**:
-
 ```
 Project: my-awesome-app
 Plan: Add authentication feature (in_progress)
 
 Tasks:
   Level 0 (parallel):
-    ✓ [task_001] Add User model           [completed]
-    ✓ [task_002] Add auth middleware      [completed]
+    ✓ [01ARZ4KY] Add User model           [completed]
+    ✓ [01ARZ4LM] Add auth middleware      [completed]
   Level 1:
-    → [task_003] Add login endpoint       [in_progress] wt:myapp2
-    ○ [task_004] Add register endpoint    [ready]
+    → [01ARZ4MN] Add login endpoint       [in_progress] session:ses_abc123
+    ○ [01ARZ4NP] Add register endpoint    [ready]
   Level 2:
-    ○ [task_005] Add JWT refresh          [pending]
+    ○ [01ARZ4PQ] Add JWT refresh          [pending]
 
-Worktrees:
-  myapp0: available
-  myapp1: available
-  myapp2: in_progress (task_003)
-  ...
+Sessions:
+  Active: 1 / Total registered: 2
 
 PRs:
   #12 Add User model        [merged]
   #13 Add auth middleware   [approved]
-  #14 Add login endpoint    [in_review]
 ```
 
 ---
 
-## 5. Mastra エージェント仕様
+## 5. MCP サーバー仕様
 
 ### 5.1 概要
 
-Mastra フレームワークを使用して3つのエージェントを構成。全エージェントは Claude (Anthropic API) を使用。
+`taskctl mcp` は MCP (Model Context Protocol) サーバーを stdio トランスポートで起動します。Claude Code がこのサーバーに接続し、plan/task 情報を参照できます。
 
-### 5.2 Planning Agent
+### 5.2 Claude Code での設定
 
-**役割**: タスクの分割と依存関係の分析
-
-**入力**:
-- プロジェクトの概要 (README, package.json 等)
-- 実装対象のブランチまたは機能説明
-- 既存のコードベース構造
-
-**出力**:
-- Small CL に分割されたタスクリスト
-- 各タスクの依存関係 (DAG)
-- 推定変更行数
-
-**プロンプト構成**:
-
-```typescript
-const planningAgentConfig = {
-  name: "planning-agent",
-  model: "claude-sonnet-4-20250514",
-  instructions: `
-    You are a planning agent that helps decompose software development tasks
-    into small, reviewable changesets following Google's Small CL best practices.
-
-    Guidelines:
-    - Each task should be ~100 lines of code changes
-    - Tasks should be atomic and independently testable
-    - Identify dependencies between tasks
-    - Group parallelizable tasks at the same level
-    - Consider: model changes → API → UI order for typical features
-
-    Output format:
-    - JSON array of tasks with dependencies
-    - Each task has: id, title, description, estimatedLines, dependsOn[]
-  `,
-  tools: [
-    readFileTool,
-    listDirectoryTool,
-    searchCodeTool,
-  ],
-};
-```
-
-### 5.3 Implementation Agent
-
-**役割**: 実装の補助とコード提案
-
-**入力**:
-- タスクの詳細説明
-- 関連ファイル
-- 依存タスクの実装内容
-
-**出力**:
-- 実装提案 (diff 形式)
-- 変更が必要なファイル一覧
-- テストの提案
-
-**プロンプト構成**:
-
-```typescript
-const implementationAgentConfig = {
-  name: "implementation-agent",
-  model: "claude-sonnet-4-20250514",
-  instructions: `
-    You are an implementation assistant that helps developers write code
-    for specific tasks. You suggest code changes but do not execute them directly.
-
-    Guidelines:
-    - Follow existing code style and patterns
-    - Keep changes minimal and focused
-    - Suggest appropriate tests
-    - Consider error handling and edge cases
-    - Format output as unified diff when showing changes
-
-    Human-in-the-loop:
-    - Always present changes for human review
-    - Ask clarifying questions when requirements are ambiguous
-    - Provide multiple options when there are trade-offs
-  `,
-  tools: [
-    readFileTool,
-    listDirectoryTool,
-    searchCodeTool,
-    analyzeDependenciesTool,
-  ],
-};
-```
-
-### 5.4 PR Agent
-
-**役割**: PR の作成と管理
-
-**入力**:
-- タスク情報
-- 変更されたファイル
-- 依存 PR 情報
-
-**出力**:
-- PR タイトル
-- PR 本文 (テンプレートベース)
-- ラベル提案
-
-**プロンプト構成**:
-
-```typescript
-const prAgentConfig = {
-  name: "pr-agent",
-  model: "claude-haiku-4-20250514",
-  instructions: `
-    You are a PR creation assistant that helps write clear, concise
-    pull request descriptions.
-
-    Guidelines:
-    - Title: [type] Brief description (50 chars max)
-    - Types: feat, fix, refactor, docs, test, chore
-    - Body: What, Why, How structure
-    - Include testing instructions
-    - Reference related tasks/issues
-
-    Format:
-    ## What
-    Brief description of changes
-
-    ## Why
-    Motivation and context
-
-    ## How
-    Implementation approach
-
-    ## Testing
-    How to test these changes
-  `,
-  tools: [
-    readFileTool,
-    gitDiffTool,
-  ],
-};
-```
-
----
-
-## 6. ワークフロー定義
-
-### 6.1 計画ワークフロー (Planning Workflow)
-
-```mermaid
-graph TD
-    A[Start: User provides task description] --> B[Gather Project Context]
-    B --> C[Planning Agent: Analyze task]
-    C --> D[Generate task breakdown]
-    D --> E[Build dependency DAG]
-    E --> F[Present plan to user]
-    F --> G{User approval?}
-    G -->|Approve| H[Save plan to DB]
-    G -->|Modify| I[User edits tasks]
-    I --> F
-    G -->|Reject| J[Discard plan]
-    H --> K[End: Plan ready]
-    J --> K
-```
-
-**ステップ詳細**:
-
-1. **Gather Project Context**
-   - package.json, README.md の読み込み
-   - ディレクトリ構造の取得
-   - 既存のプラン・タスクの確認
-
-2. **Planning Agent: Analyze**
-   - タスクの分解
-   - 依存関係の特定
-   - 変更行数の推定
-
-3. **Build Dependency DAG**
-   - トポロジカルソート
-   - レベル割り当て
-   - 循環検出
-
-4. **Human Review**
-   - ASCII/Mermaid グラフ表示
-   - タスクごとの編集可能
-   - 依存関係の調整
-
-### 6.2 実装ワークフロー (Implementation Workflow)
-
-```mermaid
-graph TD
-    A[Start: Task selected] --> B[Assign worktree]
-    B --> C[Create feature branch]
-    C --> D[Implementation Agent: Suggest code]
-    D --> E{User review}
-    E -->|Accept| F[User commits changes]
-    E -->|Modify| G[User edits code]
-    G --> F
-    E -->|Reject| D
-    F --> H[Run tests]
-    H --> I{Tests pass?}
-    I -->|Yes| J[PR Agent: Create PR]
-    I -->|No| D
-    J --> K[Update task status]
-    K --> L[End: PR created]
-```
-
-**ステップ詳細**:
-
-1. **Assign Worktree**
-   - available な worktree を選択
-   - ステータスを assigned に更新
-   - task_id を紐付け
-
-2. **Create Feature Branch**
-   - `feature/<plan-id>/<task-id>-<slug>` 形式
-   - ベースブランチから作成
-
-3. **Implementation Agent Loop**
-   - ファイル読み込みと分析
-   - 変更提案の生成
-   - ユーザーレビュー待ち
-
-4. **User Commits**
-   - 人間が最終確認
-   - 必要に応じて修正
-   - コミット実行
-
-5. **PR Creation**
-   - gh CLI で PR 作成
-   - 依存 PR へのリンク追加
-   - ステータス更新
-
----
-
-## 7. ユーザーワークフロー
-
-### 7.1 典型的な使用例: 新機能開発
-
-```bash
-# 1. プロジェクトを初期化
-cd my-project
-taskctl init
-
-# 2. 新しいプランを作成
-taskctl plan new "Add user authentication"
-
-# 3. AI でタスクを生成
-taskctl plan ai generate "
-  Implement user authentication with:
-  - User model with email/password
-  - JWT-based authentication
-  - Login/Register/Logout endpoints
-  - Auth middleware for protected routes
-"
-
-# 4. 生成されたプランを確認
-taskctl plan graph 01ARZ3NDEKTSV4RRFFQ69G5FAV
-
-# 出力例:
-# Level 0 (parallel):
-#   [task_001] Create User model and migration
-#   [task_002] Add bcrypt password hashing utility
-#
-# Level 1 (parallel):
-#   [task_003] Implement JWT token service
-#   [task_004] Add auth middleware
-#
-# Level 2 (parallel):
-#   [task_005] Create login endpoint
-#   [task_006] Create register endpoint
-#
-# Level 3:
-#   [task_007] Create logout endpoint
-
-# 5. プランを承認して開始
-taskctl plan ai approve 01ARZ3NDEKTSV4RRFFQ69G5FAV
-taskctl plan start 01ARZ3NDEKTSV4RRFFQ69G5FAV
-
-# 6. タスクを並行実行
-taskctl exec parallel --max-concurrent 3
-
-# 7. 個別タスクの実装 (対話的)
-taskctl task start task_001
-
-# → Worktree が割り当てられる
-# → Implementation Agent が実装を提案
-# → ユーザーがレビュー・修正
-# → コミット
-
-# 8. PR 作成
-taskctl pr create task_001
-
-# 9. ステータス確認
-taskctl status
-```
-
-### 7.2 リモートリポジトリからの開始
-
-```bash
-# リポジトリをクローンして初期化
-taskctl init --clone https://github.com/org/repo.git
-
-# プランを作成して作業開始
-taskctl plan new "Fix performance issues"
-taskctl plan ai generate "
-  Optimize database queries in the user service:
-  - Add missing indexes
-  - Implement query caching
-  - Fix N+1 queries in user list
-"
-```
-
-### 7.3 手動タスク管理
-
-```bash
-# 手動でタスクを追加
-taskctl task add --plan-id <id> --title "Write unit tests for User model"
-
-# 依存関係を設定
-taskctl task depends task_008 --on task_001
-
-# タスクを編集
-taskctl task edit task_008 --description "Add comprehensive unit tests..."
-```
-
----
-
-## 8. 実装ロードマップ
-
-### Phase 1: 基盤構築 (Week 1-2)
-
-**目標**: 基本的なプロジェクト構造と CLI フレームワーク
-
-**タスク**:
-1. TypeScript + Node.js プロジェクトセットアップ
-   - package.json
-   - tsconfig.json
-   - ESLint + Prettier
-2. Commander.js による CLI 基盤
-   - エントリーポイント
-   - グローバルオプション
-3. SQLite (LibSQL) + Drizzle ORM セットアップ
-   - スキーマ定義
-   - マイグレーション
-4. 基本コマンド実装
-   - `taskctl init`
-   - `taskctl project list/show`
-   - `taskctl plan new/list/show`
-
-**成果物**:
-- 動作する CLI スケルトン
-- データベース接続
-- 基本的な CRUD 操作
-
-### Phase 2: Worktree 管理 (Week 3)
-
-**目標**: Worktree プールの完全な管理機能
-
-**タスク**:
-1. WorktreePoolManager 実装
-   - プール初期化
-   - 割り当て/解放ロジック
-   - ステータス管理
-2. Git 操作ユーティリティ
-   - worktree 作成/削除
-   - ブランチ操作
-3. Worktree コマンド実装
-   - `taskctl wt init/list/status/reset`
-
-**成果物**:
-- 完全な worktree 管理機能
-- Git 連携ユーティリティ
-
-### Phase 3: Mastra 連携 (Week 4-5)
-
-**目標**: AI エージェントによるタスク計画機能
-
-**タスク**:
-1. Mastra プロジェクトセットアップ
-   - Mastra インスタンス
-   - Anthropic プロバイダー設定
-2. Planning Agent 実装
-   - プロンプト設計
-   - ツール定義
-3. 計画ワークフロー実装
-   - コンテキスト収集
-   - DAG 生成
-   - Human-in-the-loop レビュー
-4. Task コマンド拡張
-   - `taskctl plan ai generate`
-   - `taskctl plan ai review/approve`
-
-**成果物**:
-- 動作する Planning Agent
-- AI によるタスク分割機能
-
-### Phase 4: 依存関係グラフと実行エンジン (Week 6-7)
-
-**目標**: 依存関係に基づく並行実行
-
-**タスク**:
-1. DependencyGraph 実装
-   - DAG 構築
-   - トポロジカルソート
-   - レベル計算
-2. Scheduler 実装
-   - 実行可能タスクの選択
-   - Worktree 割り当て
-   - 並行実行制御
-3. Implementation Agent 実装
-   - コード提案機能
-   - 対話的レビュー
-4. Exec コマンド実装
-   - `taskctl exec parallel`
-   - `taskctl exec task`
-
-**成果物**:
-- 依存関係グラフ機能
-- 並行実行エンジン
-
-### Phase 5: PR 管理と完成 (Week 8)
-
-**目標**: GitHub 連携と全体完成
-
-**タスク**:
-1. GitHub CLI 連携
-   - PR 作成
-   - ステータス取得
-   - マージ操作
-2. PR Agent 実装
-   - PR 本文生成
-3. PR コマンド実装
-   - `taskctl pr create/list/merge`
-4. Status ダッシュボード
-   - 全体ステータス表示
-   - 進捗可視化
-5. ドキュメントとテスト
-   - ユーザーガイド
-   - E2E テスト
-
-**成果物**:
-- 完全な GitHub 連携
-- ステータスダッシュボード
-- 完成した CLI ツール
-
----
-
-## 9. 技術的詳細
-
-### 9.1 依存パッケージ
+`.claude/settings.local.json` に以下を追加:
 
 ```json
 {
-  "dependencies": {
-    "@mastra/core": "^0.x",
-    "@anthropic-ai/sdk": "^0.x",
-    "commander": "^12.x",
-    "drizzle-orm": "^0.x",
-    "@libsql/client": "^0.x",
-    "ulid": "^2.x",
-    "chalk": "^5.x",
-    "ora": "^8.x",
-    "inquirer": "^9.x"
-  },
-  "devDependencies": {
-    "typescript": "^5.x",
-    "tsx": "^4.x",
-    "vitest": "^2.x",
-    "@types/node": "^20.x",
-    "eslint": "^9.x",
-    "prettier": "^3.x"
+  "mcpServers": {
+    "taskctl": {
+      "command": "taskctl",
+      "args": ["mcp"],
+      "env": {}
+    }
   }
 }
 ```
 
-### 9.2 環境変数
+### 5.3 Phase 1: 参照ツール
 
-| 変数名 | 説明 | 必須 |
-|--------|------|------|
-| ANTHROPIC_API_KEY | Claude API キー | Yes |
-| TASKCTL_DB_PATH | DB パス (オーバーライド用) | No |
-| TASKCTL_LOG_LEVEL | ログレベル (debug/info/warn/error) | No |
+#### get_plan
 
-### 9.3 ID 体系
+プランの詳細を全タスク・依存関係と共に取得。
 
-全ての ID は ULID (Universally Unique Lexicographically Sortable Identifier) を使用:
-- 時系列でソート可能
-- URL safe
-- 例: `01ARZ3NDEKTSV4RRFFQ69G5FAV`
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "plan_id": { "type": "string", "description": "Plan ID (前方一致可)" }
+  },
+  "required": ["plan_id"]
+}
+```
 
-### 9.4 ブランチ命名規則
+**Output**:
+```json
+{
+  "plan": { "id": "...", "title": "...", "description": "...", "status": "...", "sourceBranch": "..." },
+  "tasks": [
+    { "id": "...", "title": "...", "status": "...", "level": 0, "branchName": "...", "sessionId": "..." }
+  ],
+  "dependencies": [
+    { "taskId": "...", "dependsOnId": "..." }
+  ],
+  "progress": { "total": 5, "completed": 2, "inProgress": 1, "pending": 2, "percentComplete": 40 }
+}
+```
+
+#### get_task
+
+特定タスクの詳細（依存関係、PR 情報含む）を取得。
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "task_id": { "type": "string", "description": "Task ID (前方一致可)" }
+  },
+  "required": ["task_id"]
+}
+```
+
+**Output**:
+```json
+{
+  "task": { "id": "...", "title": "...", "description": "...", "status": "...", "level": 0, "branchName": "...", "sessionId": "..." },
+  "dependencies": [{ "taskId": "...", "title": "...", "status": "..." }],
+  "dependents": [{ "taskId": "...", "title": "...", "status": "..." }],
+  "pr": { "number": 12, "url": "...", "status": "open" },
+  "plan": { "id": "...", "title": "..." }
+}
+```
+
+#### list_plans
+
+プラン一覧を取得。
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "status": { "type": "string", "description": "ステータスフィルタ (optional)" },
+    "project_path": { "type": "string", "description": "プロジェクトパス (default: cwd)" }
+  }
+}
+```
+
+#### list_tasks
+
+タスク一覧を取得。
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "plan_id": { "type": "string", "description": "プラン ID フィルタ (optional)" },
+    "status": { "type": "string", "description": "ステータスフィルタ (optional)" },
+    "level": { "type": "number", "description": "レベルフィルタ (optional)" }
+  }
+}
+```
+
+#### get_current_task
+
+現在のブランチまたはセッションに対応するタスクを取得。
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "branch_name": { "type": "string", "description": "現在の git ブランチ名 (optional)" },
+    "session_id": { "type": "string", "description": "Claude Code セッション ID (optional)" }
+  }
+}
+```
+
+**検索順序**: session_id → branch_name → null
+
+### 5.4 Phase 2: 書き込みツール (将来実装)
+
+#### claim_task
+
+タスクを選択し、Claude Code セッションを登録。
+
+**Input Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "task_id": { "type": "string" },
+    "session_id": { "type": "string" }
+  },
+  "required": ["task_id", "session_id"]
+}
+```
+
+**処理**: ブランチ作成 + session_id 設定 + status=in_progress
+
+#### update_task_status
+
+タスクステータスを更新。
+
+#### generate_plan
+
+AI でタスク生成（CLI の `plan ai generate` と同等）。
+
+#### create_plan
+
+新規プラン作成。
+
+---
+
+## 6. セッション管理
+
+### 6.1 ブランチ・セッション・タスクの関係
+
+```
+        Task (DB record)
+       /        |        \
+  branch_name   |    session_id
+      |         |         |
+  Git Branch    |    Claude Code Session
+      |         |         |
+      └─────────┴─────────┘
+       1:1:1 mapping
+```
+
+in_progress のタスクは必ず1つのブランチを持ち、最大1つの Claude Code セッションに紐付きます。
+
+### 6.2 セッション登録フロー
+
+#### Phase 1: 手動登録
+
+```
+1. taskctl task start <task-id>
+   → ブランチ作成、status=in_progress
+
+2. ユーザーが Claude Code を起動:
+   cd <project-path> && git checkout <branch> && claude
+
+3. ユーザーが Claude Code のセッション ID を確認
+
+4. taskctl session set <task-id> <session-id>
+   → session_id を DB に保存
+
+5. 後日再開:
+   taskctl task open <task-id>
+   → "claude --resume <session-id>" を出力
+```
+
+#### Phase 2: MCP 経由の自動登録 (将来)
+
+```
+1. Claude Code が taskctl MCP サーバーに接続
+2. Claude Code: list_tasks(status="ready") で利用可能タスクを表示
+3. ユーザーがタスクを選択
+4. Claude Code: claim_task(task_id, session_id) を呼び出し
+   → taskctl がブランチ作成 + session_id 登録
+5. 以降、get_current_task でタスク情報を参照しながら実装
+```
+
+### 6.3 ブランチ命名規則
 
 ```
 feature/<plan-id-short>/<task-id-short>-<slug>
@@ -1025,110 +674,171 @@ feature/01ARZ3ND/01ARZ4LM-add-auth-middleware
 
 ---
 
-## 10. セキュリティ考慮事項
+## 7. Mastra エージェント仕様
 
-### 10.1 API キー管理
-- 環境変数から読み込み
-- `.taskctl/` にはクレデンシャルを保存しない
-- `.gitignore` に `.taskctl/` を追加推奨
+### 7.1 概要
 
-### 10.2 Human-in-the-loop
-- AI は提案のみ、実行は人間が行う
-- コミット前に必ず差分を確認
-- 自動コミット機能は実装しない
+Planning Agent のみを使用。Claude Code が実装を担当するため、Implementation Agent と PR Agent は不要。
 
-### 10.3 Git 操作の安全性
-- force push は使用しない
-- メインブランチへの直接コミットは禁止
-- Worktree は隔離された環境
+### 7.2 Planning Agent
 
----
+**役割**: タスクの分割と依存関係の分析
 
-## 11. 今後の拡張可能性
+**モデル**: claude-sonnet-4-20250514
 
-### 11.1 検討中の機能
-- GitLab/Bitbucket 対応
-- カスタムプロンプトテンプレート
-- CI/CD 連携
-- コードレビュー自動化
-- テスト自動生成
+**入力**:
+- プロジェクトの概要 (README, package.json 等)
+- 実装対象の機能説明
+- 既存のコードベース構造
 
-### 11.2 プラグインシステム
-将来的にプラグインアーキテクチャを導入し、以下を可能に:
-- カスタムエージェント
-- 独自ワークフロー
-- 外部ツール連携
+**出力**:
+- Small CL に分割されたタスクリスト
+- 各タスクの依存関係 (DAG)
+- 推定変更行数
 
 ---
 
-## 付録 A: コマンドリファレンス
+## 8. ワークフロー
 
-完全なコマンド一覧:
+### 8.1 計画ワークフロー
 
 ```
-taskctl init [--clone <url>] [--worktrees <n>] [--main-branch <branch>] [--name <name>]
-taskctl project list
-taskctl project show [project-id]
-taskctl project current
-taskctl project config [--worktrees <n>]
-taskctl project remove [project-id] [--force]
-taskctl plan new "<title>" [--description "<desc>"]
-taskctl plan list [--status <status>]
-taskctl plan show <plan-id>
-taskctl plan ai generate "<prompt>" [--plan-id <id>] [--branch <branch>] [--max-lines <n>] [--context <file>]
-taskctl plan ai review <plan-id>
+User: taskctl plan ai generate "Add auth feature"
+  → プロジェクトコンテキスト収集
+  → Planning Agent (Mastra + Anthropic Claude) でタスク分割
+  → DAG レベル計算 (トポロジカルソート)
+  → SQLite に保存
+  → プラン概要を表示
+```
+
+### 8.2 タスク実行ワークフロー
+
+```
+1. taskctl task start <task-id>
+   → 依存タスク完了を検証
+   → ブランチ作成 (feature/<plan>/<task>-<slug>)
+   → status=in_progress, branch_name 設定
+
+2. Claude Code を起動 (手動 or taskctl task open)
+   → Claude Code が MCP 経由で get_current_task
+   → タスクの詳細・依存関係を取得
+
+3. Claude Code セッション内で実装
+   → 開発者と Claude Code が協調
+   → ブランチにコミット
+
+4. taskctl session set <task-id> <session-id>
+   → セッション ID を保存 (中断・再開用)
+
+5. taskctl pr create <task-id>
+   → ブランチを push
+   → gh CLI で PR 作成
+   → status=pr_created
+
+6. PR マージ後:
+   → taskctl pr merge or taskctl pr sync
+   → status=completed
+   → 後続タスクが ready に
+```
+
+### 8.3 典型的な使用例
+
+```bash
+# 1. プロジェクト初期化
+cd my-project
+taskctl init
+
+# 2. AI でタスク生成
+taskctl plan ai generate "
+  Implement user authentication with:
+  - User model with email/password
+  - JWT-based authentication
+  - Login/Register/Logout endpoints
+"
+
+# 3. プランを確認
+taskctl plan graph <plan-id>
+
+# 4. プランを承認・開始
 taskctl plan ai approve <plan-id>
-taskctl plan graph <plan-id> [--format ascii|mermaid]
-taskctl plan delete <plan-id>
 taskctl plan start <plan-id>
-taskctl task list [--plan-id <id>] [--status <status>]
-taskctl task show <task-id>
-taskctl task add --plan-id <id> --title "<title>" [--depends-on <task-id>...]
-taskctl task edit <task-id> [--title "<title>"] [--description "<desc>"]
-taskctl task delete <task-id>
-taskctl task depends <task-id> --on <dependency-task-id>
-taskctl task undepends <task-id> --on <dependency-task-id>
+
+# 5. タスクを開始
 taskctl task start <task-id>
-taskctl task complete <task-id>
-taskctl wt init [--count <n>]
-taskctl wt list
-taskctl wt status [worktree-id]
-taskctl wt reset <worktree-id>
-taskctl wt reset --all
-taskctl wt cd <worktree-id>
-taskctl wt path <worktree-id>
-taskctl exec parallel [--plan-id <id>] [--max-concurrent <n>] [--dry-run]
-taskctl exec task <task-id>
-taskctl exec status
-taskctl exec stop [--all]
-taskctl pr create <task-id> [--draft] [--title "<title>"]
-taskctl pr list [--plan-id <id>] [--status <status>]
-taskctl pr sync [task-id]
-taskctl pr merge <task-id> [--squash]
-taskctl pr close <task-id>
-taskctl status [--plan-id <id>] [--json]
+# → Branch created: feature/01AR/01A4-add-user-model
+# → Run: claude (to start Claude Code)
+
+# 6. Claude Code を起動
+claude  # Claude Code が MCP 経由でタスク情報を参照
+
+# 7. セッション ID を登録
+taskctl session set <task-id> <session-id>
+
+# 8. 後日再開
+taskctl task open <task-id>
+# → claude --resume ses_abc123
+
+# 9. PR 作成
+taskctl pr create <task-id>
+
+# 10. ステータス確認
+taskctl status
 ```
 
 ---
 
-## 付録 B: ステータス遷移図
+## 9. 技術的詳細
+
+### 9.1 依存パッケージ
+
+```json
+{
+  "dependencies": {
+    "@mastra/core": "^0.5.0",
+    "@ai-sdk/anthropic": "^3.0.15",
+    "@modelcontextprotocol/sdk": "^1.x",
+    "commander": "^13.1.0",
+    "drizzle-orm": "^0.39.1",
+    "@libsql/client": "^0.15.0",
+    "ulid": "^2.3.0",
+    "chalk": "^5.4.1",
+    "ora": "^8.1.1",
+    "inquirer": "^12.3.2",
+    "zod": "^3.x"
+  },
+  "devDependencies": {
+    "typescript": "^5.x",
+    "tsx": "^4.x",
+    "vitest": "^2.x",
+    "@types/node": "^22.x",
+    "eslint": "^9.x",
+    "prettier": "^3.x"
+  }
+}
+```
+
+### 9.2 環境変数
+
+| 変数名 | 説明 | 必須 |
+|--------|------|------|
+| ANTHROPIC_API_KEY | Claude API キー | Yes (AI 機能使用時) |
+| TASKCTL_DB_PATH | DB パス (オーバーライド用) | No |
+| TASKCTL_LOG_LEVEL | ログレベル (debug/info/warn/error) | No |
+
+### 9.3 ID 体系
+
+全ての ID は ULID を使用（時系列ソート可能、URL safe）。
+
+---
+
+## 10. ステータス遷移図
 
 ### Task ステータス
 
 ```
-pending → ready → assigned → in_progress → pr_created → in_review → completed
-    ↓                ↓            ↓
-  blocked ←────────────────────────
-```
-
-### Worktree ステータス
-
-```
-available → assigned → in_progress → pr_pending → completed → available
-                ↓           ↓            ↓
-              error ←───────────────────────
-                ↓
-            available (reset)
+pending → ready → in_progress → pr_created → in_review → completed
+    ↓                  ↓
+  blocked ←────────────
 ```
 
 ### PR ステータス
@@ -1138,3 +848,55 @@ draft → open → in_review → approved → merged
                    ↓           ↓
                 closed ←───────
 ```
+
+---
+
+## 11. 実装ロードマップ
+
+### Phase 1: スキーマ変更とクリーンアップ
+
+- worktrees テーブル削除
+- tasks に session_id 追加、worktree_id 削除
+- prs から worktree_id 削除
+- projects から worktree_count 削除
+- 関連リポジトリ関数の更新
+
+### Phase 2: CLI コマンド更新
+
+- worktree.ts, exec.ts 削除
+- scheduler.ts 削除
+- session.ts 新規作成 (session set/list/clear)
+- mcp.ts 新規作成 (MCP サーバー起動)
+- init.ts 簡素化
+- task.ts 更新 (start, open)
+- pr.ts から worktree 参照削除
+- status.ts 更新
+
+### Phase 3: MCP サーバー実装
+
+- @modelcontextprotocol/sdk 導入
+- mcp/ ディレクトリ構築
+- Phase 1 参照ツール実装 (get_plan, get_task, list_plans, list_tasks, get_current_task)
+- Claude Code 接続テスト
+
+### Phase 4: サービス層抽出
+
+- CLI と MCP で共有するビジネスロジックを services/ に抽出
+- CLI コマンドをサービス経由にリファクタリング
+- MCP ツールをサービス経由にリファクタリング
+
+### Phase 5: 書き込みツールと仕上げ (将来)
+
+- claim_task, update_task_status, generate_plan, create_plan
+- task open コマンドの強化
+- テスト追加
+- ドキュメント更新
+
+---
+
+## 12. 今後の拡張可能性
+
+- MCP 書き込みツールによる Claude Code からのタスク選択・登録
+- CI/CD 連携
+- 複数プロジェクト対応の強化
+- カスタムプロンプトテンプレート

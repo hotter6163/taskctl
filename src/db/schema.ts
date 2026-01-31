@@ -7,7 +7,6 @@ export type PlanStatus = (typeof planStatuses)[number];
 export const taskStatuses = [
   "pending",
   "ready",
-  "assigned",
   "in_progress",
   "pr_created",
   "in_review",
@@ -15,16 +14,6 @@ export const taskStatuses = [
   "blocked",
 ] as const;
 export type TaskStatus = (typeof taskStatuses)[number];
-
-export const worktreeStatuses = [
-  "available",
-  "assigned",
-  "in_progress",
-  "pr_pending",
-  "completed",
-  "error",
-] as const;
-export type WorktreeStatus = (typeof worktreeStatuses)[number];
 
 export const prStatuses = ["draft", "open", "in_review", "approved", "merged", "closed"] as const;
 export type PrStatus = (typeof prStatuses)[number];
@@ -36,7 +25,6 @@ export const projects = sqliteTable("projects", {
   path: text("path").notNull().unique(),
   remoteUrl: text("remote_url"),
   mainBranch: text("main_branch").notNull().default("main"),
-  worktreeCount: integer("worktree_count").notNull().default(10),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -72,8 +60,8 @@ export const tasks = sqliteTable("tasks", {
   status: text("status").notNull().default("pending").$type<TaskStatus>(),
   level: integer("level").notNull().default(0),
   estimatedLines: integer("estimated_lines"),
-  worktreeId: text("worktree_id").references(() => worktrees.id, { onDelete: "set null" }),
   branchName: text("branch_name"),
+  sessionId: text("session_id"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -96,33 +84,12 @@ export const taskDeps = sqliteTable("task_deps", {
 export type TaskDep = typeof taskDeps.$inferSelect;
 export type NewTaskDep = typeof taskDeps.$inferInsert;
 
-// Worktrees table
-export const worktrees = sqliteTable("worktrees", {
-  id: text("id").primaryKey(),
-  projectId: text("project_id")
-    .notNull()
-    .references(() => projects.id, { onDelete: "cascade" }),
-  name: text("name").notNull(),
-  path: text("path").notNull(),
-  branch: text("branch"),
-  status: text("status").notNull().default("available").$type<WorktreeStatus>(),
-  taskId: text("task_id"),
-  createdAt: text("created_at").notNull(),
-  updatedAt: text("updated_at").notNull(),
-});
-
-export type Worktree = typeof worktrees.$inferSelect;
-export type NewWorktree = typeof worktrees.$inferInsert;
-
 // Pull requests table
 export const prs = sqliteTable("prs", {
   id: text("id").primaryKey(),
   taskId: text("task_id")
     .notNull()
     .references(() => tasks.id, { onDelete: "cascade" }),
-  worktreeId: text("worktree_id")
-    .notNull()
-    .references(() => worktrees.id, { onDelete: "cascade" }),
   number: integer("number").notNull(),
   url: text("url").notNull(),
   status: text("status").notNull().default("draft").$type<PrStatus>(),

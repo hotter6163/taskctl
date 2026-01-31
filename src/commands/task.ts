@@ -12,9 +12,9 @@ import {
   getTaskDependencies,
 } from "../db/repositories/task.js";
 import { getPlanById, getPlansByProject } from "../db/repositories/plan.js";
-import { getAvailableWorktrees, assignWorktree } from "../db/repositories/worktree.js";
 import { getCurrentProject } from "./project.js";
 import { shortId } from "../utils/id.js";
+import { createBranch } from "../integrations/git.js";
 import type { TaskStatus } from "../db/schema.js";
 
 export function registerTaskCommand(program: Command): void {
@@ -105,9 +105,16 @@ export function registerTaskCommand(program: Command): void {
 
   taskCmd
     .command("start <task-id>")
-    .description("Start a task (assign worktree)")
+    .description("Start a task (create branch)")
     .action(async (taskId: string) => {
       await startTask(taskId);
+    });
+
+  taskCmd
+    .command("open <task-id>")
+    .description("Output command to launch/resume Claude Code for a task")
+    .action(async (taskId: string) => {
+      await openTask(taskId);
     });
 
   taskCmd
@@ -195,11 +202,11 @@ async function showTask(taskId: string): Promise<void> {
   if (task.estimatedLines) {
     console.log(`  ${chalk.bold("Estimated lines:")} ${task.estimatedLines}`);
   }
-  if (task.worktreeId) {
-    console.log(`  ${chalk.bold("Worktree:")}        ${task.worktreeId}`);
-  }
   if (task.branchName) {
     console.log(`  ${chalk.bold("Branch:")}          ${task.branchName}`);
+  }
+  if (task.sessionId) {
+    console.log(`  ${chalk.bold("Session ID:")}      ${task.sessionId}`);
   }
 
   if (deps.length > 0) {
@@ -235,7 +242,6 @@ async function addTask(options: {
   // Determine level from dependencies or use provided value
   let level = options.level ?? 0;
   if (options.dependsOn && options.dependsOn.length > 0 && options.level === undefined) {
-    // Calculate level as max(dependency levels) + 1
     for (const depId of options.dependsOn) {
       const depTask = await findTask(depId);
       if (depTask) {
@@ -263,7 +269,7 @@ async function addTask(options: {
     }
   }
 
-  console.log(chalk.green("✓ Task created"));
+  console.log(chalk.green("Task created"));
   console.log("");
   console.log(`  ${chalk.bold("ID:")}     ${task.id}`);
   console.log(`  ${chalk.bold("Title:")}  ${task.title}`);
@@ -299,7 +305,7 @@ async function editTask(
   }
 
   await updateTask(task.id, updates);
-  console.log(chalk.green("✓ Task updated"));
+  console.log(chalk.green("Task updated"));
 }
 
 async function removeTask(taskId: string): Promise<void> {
@@ -310,7 +316,7 @@ async function removeTask(taskId: string): Promise<void> {
   }
 
   await deleteTask(task.id);
-  console.log(chalk.green(`✓ Task "${task.title}" deleted`));
+  console.log(chalk.green(`Task "${task.title}" deleted`));
 }
 
 async function addDependency(taskId: string, dependsOnId: string): Promise<void> {
@@ -327,7 +333,7 @@ async function addDependency(taskId: string, dependsOnId: string): Promise<void>
   }
 
   await addTaskDependency(task.id, depTask.id);
-  console.log(chalk.green(`✓ Dependency added: ${shortId(task.id)} depends on ${shortId(depTask.id)}`));
+  console.log(chalk.green(`Dependency added: ${shortId(task.id)} depends on ${shortId(depTask.id)}`));
 }
 
 async function removeDependency(taskId: string, dependsOnId: string): Promise<void> {
@@ -345,7 +351,7 @@ async function removeDependency(taskId: string, dependsOnId: string): Promise<vo
 
   const removed = await removeTaskDependency(task.id, depTask.id);
   if (removed) {
-    console.log(chalk.green(`✓ Dependency removed`));
+    console.log(chalk.green("Dependency removed"));
   } else {
     console.log(chalk.yellow("Dependency not found"));
   }
@@ -370,44 +376,66 @@ async function startTask(taskId: string): Promise<void> {
     process.exit(1);
   }
 
-  // Check if task already has a worktree
-  if (task.worktreeId) {
-    console.log(chalk.yellow("Task already has a worktree assigned"));
+  // Check if task already started
+  if (task.branchName) {
+    console.log(chalk.yellow("Task already has a branch assigned"));
+    console.log(`  ${chalk.bold("Branch:")} ${task.branchName}`);
     return;
   }
 
-  // Get available worktree
-  const available = await getAvailableWorktrees(project.id);
-  if (available.length === 0) {
-    console.error(chalk.red("No worktrees available"));
-    console.error(chalk.gray("Wait for a worktree to become available or reset one"));
-    process.exit(1);
-  }
-
-  const worktree = available[0];
-  if (!worktree) {
-    console.error(chalk.red("Failed to get worktree"));
-    process.exit(1);
+  // Validate all dependencies are completed
+  const deps = await getTaskDependencies(task.id);
+  for (const dep of deps) {
+    const depTask = await getTaskById(dep.dependsOnId);
+    if (depTask && depTask.status !== "completed") {
+      console.error(chalk.red(`Dependency not completed: ${depTask.title} (${depTask.status})`));
+      process.exit(1);
+    }
   }
 
   // Create branch name
   const branchName = `feature/${shortId(plan.id)}/${shortId(task.id)}-${slugify(task.title)}`;
 
-  // Assign worktree
-  await assignWorktree(worktree.id, task.id, branchName);
+  // Create branch from plan's source branch
+  try {
+    await createBranch(project.path, branchName, plan.sourceBranch);
+  } catch (error) {
+    console.error(chalk.red("Failed to create branch"));
+    if (error instanceof Error) {
+      console.error(chalk.gray(error.message));
+    }
+    process.exit(1);
+  }
+
+  // Update task
   await updateTask(task.id, {
-    worktreeId: worktree.id,
     branchName,
     status: "in_progress",
   });
 
-  console.log(chalk.green("✓ Task started"));
+  console.log(chalk.green("Task started"));
   console.log("");
-  console.log(`  ${chalk.bold("Worktree:")}  ${worktree.name}`);
-  console.log(`  ${chalk.bold("Path:")}      ${worktree.path}`);
-  console.log(`  ${chalk.bold("Branch:")}    ${branchName}`);
+  console.log(`  ${chalk.bold("Branch:")}  ${branchName}`);
   console.log("");
-  console.log(chalk.gray(`cd ${worktree.path}`));
+  console.log(chalk.gray("Next: Launch Claude Code to start working"));
+  console.log(chalk.gray(`  claude`));
+  console.log(chalk.gray(`  # Then register the session: taskctl session set ${shortId(task.id)} <session-id>`));
+}
+
+async function openTask(taskId: string): Promise<void> {
+  const task = await findTask(taskId);
+  if (!task) {
+    console.error(chalk.red(`Task not found: ${taskId}`));
+    process.exit(1);
+  }
+
+  if (task.sessionId) {
+    // Output resume command
+    console.log(`claude --resume ${task.sessionId}`);
+  } else {
+    // Output basic launch command
+    console.log("claude");
+  }
 }
 
 async function completeTask(taskId: string): Promise<void> {
@@ -418,7 +446,7 @@ async function completeTask(taskId: string): Promise<void> {
   }
 
   await updateTaskStatus(task.id, "completed");
-  console.log(chalk.green(`✓ Task "${task.title}" marked as completed`));
+  console.log(chalk.green(`Task "${task.title}" marked as completed`));
 }
 
 async function findTask(taskId: string) {
@@ -454,8 +482,6 @@ function getStatusColor(status: TaskStatus) {
       return chalk.gray;
     case "ready":
       return chalk.cyan;
-    case "assigned":
-      return chalk.blue;
     case "in_progress":
       return chalk.yellow;
     case "pr_created":
