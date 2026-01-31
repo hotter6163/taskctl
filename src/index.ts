@@ -10,6 +10,7 @@ import { registerSessionCommand } from "./commands/session.js";
 import { registerMcpCommand } from "./commands/mcp.js";
 import { registerPrCommand } from "./commands/pr.js";
 import { registerStatusCommand } from "./commands/status.js";
+import { registerDbCommand } from "./commands/db.js";
 
 const program = new Command();
 
@@ -29,6 +30,7 @@ registerSessionCommand(program);
 registerMcpCommand(program);
 registerPrCommand(program);
 registerStatusCommand(program);
+registerDbCommand(program);
 
 // Initialize database and run
 async function main() {

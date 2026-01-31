@@ -4,12 +4,12 @@ import chalk from "chalk";
 import ora from "ora";
 import {
   isGitRepo,
-  getRepoRoot,
   getRemoteUrl,
   cloneRepo,
   getRepoName,
+  getMainRepoPath,
 } from "../integrations/git.js";
-import { createProject, getProjectByPath } from "../db/repositories/project.js";
+import { createProject, getProjectByPath, getProjectByRemoteUrl } from "../db/repositories/project.js";
 import { loadGlobalConfig } from "../utils/config.js";
 
 interface InitOptions {
@@ -51,11 +51,10 @@ async function initProject(options: InitOptions): Promise<void> {
     }
   } else {
     // Initialize existing directory
-    projectPath = resolve(process.cwd());
-    projectName = options.name ?? basename(projectPath);
+    const currentPath = resolve(process.cwd());
 
     // Check if it's a git repository
-    const isRepo = await isGitRepo(projectPath);
+    const isRepo = await isGitRepo(currentPath);
     if (!isRepo) {
       console.error(chalk.red("Error: Current directory is not a git repository"));
       console.error(chalk.gray("Use 'git init' to initialize a git repository first"));
@@ -63,20 +62,29 @@ async function initProject(options: InitOptions): Promise<void> {
       process.exit(1);
     }
 
-    // Get the repo root (in case we're in a subdirectory)
-    projectPath = await getRepoRoot(projectPath);
-  }
-
-  // Check if already initialized
-  const existingProject = await getProjectByPath(projectPath);
-  if (existingProject) {
-    console.error(chalk.red("Error: This project is already initialized"));
-    console.error(chalk.gray(`Project ID: ${existingProject.id}`));
-    process.exit(1);
+    // Resolve to main repo path (handles worktrees)
+    projectPath = await getMainRepoPath(currentPath);
+    projectName = options.name ?? basename(projectPath);
   }
 
   // Get remote URL
   const remoteUrl = await getRemoteUrl(projectPath);
+
+  // Check if already initialized (by remote URL first, then by path)
+  if (remoteUrl) {
+    const existingByRemote = await getProjectByRemoteUrl(remoteUrl);
+    if (existingByRemote) {
+      console.error(chalk.red("Error: This repository is already initialized"));
+      console.error(chalk.gray(`Project: ${existingByRemote.name} (${existingByRemote.id})`));
+      process.exit(1);
+    }
+  }
+  const existingByPath = await getProjectByPath(projectPath);
+  if (existingByPath) {
+    console.error(chalk.red("Error: This project is already initialized"));
+    console.error(chalk.gray(`Project ID: ${existingByPath.id}`));
+    process.exit(1);
+  }
 
   const spinner = ora("Initializing project...").start();
 

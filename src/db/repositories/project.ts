@@ -40,6 +40,15 @@ export async function getProjectByPath(path: string): Promise<Project | null> {
 }
 
 /**
+ * Get a project by remote URL
+ */
+export async function getProjectByRemoteUrl(remoteUrl: string): Promise<Project | null> {
+  const db = getDb();
+  const result = await db.select().from(projects).where(eq(projects.remoteUrl, remoteUrl)).limit(1);
+  return result[0] ?? null;
+}
+
+/**
  * Get all projects
  */
 export async function getAllProjects(): Promise<Project[]> {

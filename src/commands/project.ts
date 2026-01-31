@@ -4,9 +4,11 @@ import chalk from "chalk";
 import {
   getAllProjects,
   getProjectByPath,
+  getProjectByRemoteUrl,
   updateProject,
   deleteProject,
 } from "../db/repositories/project.js";
+import { getMainRepoPath, getRemoteUrl, isGitRepo } from "../integrations/git.js";
 import { shortId } from "../utils/id.js";
 import { existsSync } from "node:fs";
 import ora from "ora";
@@ -181,7 +183,25 @@ async function removeProject(
 
 async function getCurrentProject() {
   const currentPath = resolve(process.cwd());
-  return getProjectByPath(currentPath);
+
+  // Check if we're in a git repo
+  const isRepo = await isGitRepo(currentPath);
+  if (!isRepo) return null;
+
+  // Resolve to main repo path (handles worktrees)
+  const mainPath = await getMainRepoPath(currentPath);
+
+  // Try by path first
+  const byPath = await getProjectByPath(mainPath);
+  if (byPath) return byPath;
+
+  // Try by remote URL (handles worktrees registered from a different path)
+  const remoteUrl = await getRemoteUrl(mainPath);
+  if (remoteUrl) {
+    return getProjectByRemoteUrl(remoteUrl);
+  }
+
+  return null;
 }
 
 // Export for use in other commands

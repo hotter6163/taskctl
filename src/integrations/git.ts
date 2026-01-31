@@ -248,6 +248,19 @@ export async function push(
 }
 
 /**
+ * Get the main repository path, resolving worktrees to their parent repo
+ */
+export async function getMainRepoPath(path: string): Promise<string> {
+  const { stdout } = await gitExec(
+    ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    path
+  );
+  // git-common-dir returns the .git directory; for a normal repo it's "<repo>/.git",
+  // for a worktree it's "<main-repo>/.git". Either way, parent is the main repo root.
+  return resolve(stdout, "..");
+}
+
+/**
  * Get repository name from path or URL
  */
 export function getRepoName(pathOrUrl: string): string {
